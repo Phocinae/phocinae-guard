@@ -1,3 +1,13 @@
+Metadata-Version: 2.4
+Name: phocinae-guard
+Version: 0.1.0
+Summary: Phocinae command approval gate for AI harnesses (L0 whitelist/blacklist)
+License: Apache-2.0
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Dynamic: license-file
+
 # phocinae-guard · L0 内核
 
 **斑海豹（phocinae）命令行审批门 L0 内核**：一条 shell 命令进来，判定出去
@@ -85,7 +95,7 @@ cp guard.conf.example.json /etc/phocinae-guard.conf.json
 ```
 
 依赖：仅 Python ≥ 3.8。L1 判定需要一个 `/v1/systemone` 服务（phocinae-server P0
-扁平协议，或测试用 mock_server.py）。**L1 默认关闭（`l1_enabled=false`）**——
+扁平协议，或测试用 mock_server.py）。**P0 口径：L1 默认关闭（`l1_enabled=false`）**——
 当前 150M 权重未经命令审批域校准（2026-10-08 联合实测：对灰区命令的 noul/score
 信号≈噪声），灰区命令走 fail-closed（deny/ask）。领域微调 + 标定电池完成后（P1）
 再开 `PHOCINAE_GUARD_L1_ENABLED=1`。不装服务也可用——L1 关闭时灰区自动进入
@@ -166,7 +176,7 @@ claude-community 市场提交为后续迭代。**
 
 ```bash
 # 本地开发/验证：claude --plugin-dir 直接挂本仓（团队分发走插件市场，后续迭代）
-claude --plugin-dir ./phocinae-guard
+claude --plugin-dir /home/hermes/dev/phocinae-guard
 ```
 
 依赖：`python3` ≥ 3.8 在 PATH（hook 与 guard.py 均零第三方包）。不装插件时，可把

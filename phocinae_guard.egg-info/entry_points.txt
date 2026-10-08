@@ -1,0 +1,2 @@
+[console_scripts]
+phocinae-guard = phocinae_guard.guard:main

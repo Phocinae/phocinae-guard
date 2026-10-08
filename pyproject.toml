@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phocinae-guard"
+version = "0.1.1"
+description = "Phocinae command approval gate for AI harnesses (L0 whitelist/blacklist)"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+phocinae-guard = "phocinae_guard.guard:main"
+
+[tool.setuptools]
+packages = ["phocinae_guard"]
+
+[tool.setuptools.package-data]
+phocinae_guard = ["l0_table.json"]
