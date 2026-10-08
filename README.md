@@ -1,0 +1,250 @@
+# phocinae-guard · L0 内核
+
+**斑海豹（phocinae）命令行审批门 L0 内核**：一条 shell 命令进来，判定出去
+（`allow` / `deny` / `ask` + exit code）。面向 Claude Code / Cline / Codex CLI /
+Crush / dsh / Gemini CLI / Qwen Code / Kimi Code / OpenHands / Hermes 的 hook /
+包装通用形态；本次交付为通用 CLI 形态（stdin 或 `--command`）。
+
+## 定位
+
+- 审批门而非沙箱：只做「放行 / 拒绝 / 需人工确认」判定，不承诺隔离执行环境。
+- 单文件 `guard.py`，Python ≥ 3.8，**零第三方依赖**（纯标准库），可直接塞进任何 hook 管道。
+- L0 确定性表独立存活：服务器挂了也能守住黑白名单底线。
+
+## 架构（三层）
+
+```
+命令 → 归一化
+  ├─ L0 确定性表（纯离线）：白名单精确/前缀 → allow
+  │                         黑名单危险正则 → deny（先于白名单判定）
+  ├─ L1 /v1/systemone 两问：noul「是否放行」+ score「风险层 2–10」（默认关闭，见下）
+  │      阈值映射（通道合成取最严格）：
+  │        risk≥7 或 noul=false(≤0.35) → deny
+  │        risk 4–6 或 noul 摇摆        → ask（hook 阻塞态，可 --confirm）
+  │        其余（risk<4 且 noul=true）  → allow
+  └─ 服务器不可用 → fail-closed：除白名单外一律 deny/ask（默认 deny，可配 ask）
+
+不变式：只有 allow 类能过门（exit 0）；deny/ask 均非零退出；
+--confirm 只能把 ask 升级为 allow，永远不能覆盖 deny。
+```
+
+判定矩阵（noul 阈值 0.65 / ask≥4 / deny≥7，均可配）：
+
+| risk | noul=false | noul 摇摆 | noul=true |
+|------|-----------|----------|-----------|
+| ≥7   | deny | deny | deny |
+| 4–6  | deny | ask | ask |
+| <4   | deny | ask | allow |
+
+## L0 表内容概要（`l0_table.json`，24 条黑名单正则）
+
+| 类 | 覆盖 |
+|----|------|
+| 危险删除 | `rm -rf /`、`/*`、`~`、`$HOME`、`/etc` `/usr` `/var` `/boot` `/bin` `/sbin` `/lib` `/opt` `/root`、`rm -rf .`/`..` |
+| sudo 破坏 | `sudo rm/dd/mkfs/fdisk/sfdisk/parted/wipefs/shutdown/reboot/poweroff/halt` |
+| 下载即执行 | `curl\|sh`、`wget\|bash`、任意管道喂 shell、`sh -c 'curl…'`、`eval $(curl)`、`source <(curl)` |
+| git 破坏 | `push --force`/`-f`、`push --delete`（`--force-with-lease` 有意放行到 L1 由模型裁决） |
+| find/xargs 删除 | `find / -delete`、`find /usr… -delete`、`find -exec rm`、`xargs rm` |
+| 块设备 | `dd of=/dev/sd*/hd*/vd*/nvme*/mmcblk*/dm-*/md*/loop*/disk`、`mkfs.*` |
+| 权限/属主 | `chmod [-R] 777`、`chown … /系统路径` |
+| 其他 | fork bomb（`:(){ :\|:& };:`、`%0\|%0`）、`shutdown/reboot/poweroff/halt`、`crontab -r`、`> /etc…` 重定向覆写、`mv` 进系统路径 |
+
+白名单：`ls`/`pwd`/`git status|diff|log|show|fetch|branch|tag` 等只读命令（精确+前缀两档），
+服务器不可用时这些命令仍可离线放行。
+
+## 目录结构
+
+```
+phocinae-guard/
+├── guard.py               # 单文件审批门（纯标准库）
+├── l0_table.json          # L0 确定性表（白名单+黑名单正则）
+├── guard.conf.example.json# 配置文件示例
+├── mock_server.py         # 本地测试 mock（POST /v1/systemone 固定 noul/score）
+├── mock_rules.json        # mock 按命令区分的规则（灰带命令用）
+├── test_guard.py          # 验收测试（replay battery + 全链路）
+├── .claude-plugin/        # Claude Code 插件（本地成品；市场提交为后续迭代）
+│   ├── plugin.json        # 插件 manifest（name/version/description/author/hooks 声明）
+│   ├── hooks/
+│   │   ├── hooks.json     # PreToolUse(Bash) command 型 hook 配置
+│   │   └── guard_hook.py  # hook 本体：Claude Code JSON 协议 ↔ guard.py 裁决
+│   ├── skills/
+│   │   └── phocinae-guard/SKILL.md  # 「审批门」技能说明（应对守则+自查清单）
+│   └── scripts/
+│       └── self_test.sh   # 插件自测（hook 链路 + exit code 断言）
+├── README.md
+└── LICENSE                # Apache-2.0
+```
+
+## 安装
+
+```bash
+mkdir -p /opt/phocinae-guard
+cp guard.py l0_table.json /opt/phocinae-guard/
+# 可选：全局配置文件（路径、阈值、L0 表路径都在这里改）
+cp guard.conf.example.json /etc/phocinae-guard.conf.json
+```
+
+依赖：仅 Python ≥ 3.8。L1 判定需要一个 `/v1/systemone` 服务（phocinae-server P0
+扁平协议，或测试用 mock_server.py）。**P0 口径：L1 默认关闭（`l1_enabled=false`）**——
+当前 150M 权重未经命令审批域校准（2026-10-08 联合实测：对灰区命令的 noul/score
+信号≈噪声），灰区命令走 fail-closed（deny/ask）。领域微调 + 标定电池完成后（P1）
+再开 `PHOCINAE_GUARD_L1_ENABLED=1`。不装服务也可用——L1 关闭时灰区自动进入
+fail-closed。
+
+## 用法
+
+```bash
+# stdin 收命令
+echo "rm -rf /" | guard.py            # exit 1，deny
+# 或显式传
+guard.py --command "git status"       # exit 0，allow
+guard.py --command "npm install -g x" # exit 2，ask（需人工确认）
+guard.py --command "npm install -g x" --confirm   # 人工确认后 exit 0
+```
+
+exit code：`0`=allow（可执行）· `1`=deny（拒绝）· `2`=ask（阻塞待人工，hook 输出阻塞态）·
+`3`=用法/配置错误。stdout 默认一行 JSON（含 `decision`/`layer`/`reason`/`noul`/`score`/
+`thresholds`/`exit`），`--text` 换人读格式。审计 JSONL（ts+command+cwd+decision+依据层+原因）
+默认追加到 `./phocinae-guard.audit.jsonl`，`--audit off` 或 env 置 `off` 可禁用。
+
+## 集成示例
+
+**通用 bash 包装**（Claude Code / Cline / Crush / dsh 等都可用）：
+
+```bash
+#!/usr/bin/env bash
+# guard-wrap.sh：先过门再执行
+out=$(/opt/phocinae-guard/guard.py --command "$1")
+case $? in
+  0) shift; exec "$@" ;;                       # allow → 执行
+  1) echo "[guard] DENY: $out" >&2; exit 1 ;;  # deny → 拦截
+  2) echo "[guard] ASK: $out" >&2; exit 2 ;;   # ask → 阻塞待人工
+  *) echo "[guard] ERROR" >&2; exit 3 ;;
+esac
+```
+
+**Claude Code PreToolUse hook**（`settings.json`）：
+
+```json
+{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+  {"type": "command",
+   "command": "jq -r .tool_input.command | /opt/phocinae-guard/guard.py"}]}]}}
+```
+
+hook 收到的 stdin JSON 里取命令后喂给 guard：exit 0 放行；exit 2 输出
+`decision=ask` 给前端做人工确认（确认后带 `--confirm` 重跑）；exit 1 直接阻断。
+其余工具同理：Codex CLI / Gemini CLI 用 `sandbox_command_wrapper`/`command wrapper`，
+OpenHands / Hermes 用 PreToolUse 类 hook——凡是能「拦命令、看 exit code」的位置都能挂。
+
+## Claude Code 插件（.claude-plugin/）
+
+本地成品形态：一个 Claude Code 插件目录——`PreToolUse(Bash)` 拦截每一次 shell
+命令，交给 guard.py 裁决，再把结果翻译成 Claude Code hook JSON 协议
+（`permissionDecision: allow/deny/ask` + 可执行理由）。**本次仅本地成品，不发布；
+claude-community 市场提交为后续迭代。**
+
+### 插件结构
+
+- `.claude-plugin/plugin.json`：manifest（name/version/description/author +
+  `hooks`/`skills` 组件声明，Apache-2.0）；
+- `.claude-plugin/hooks/hooks.json`：`PreToolUse` → matcher `Bash` → command 型
+  hook `python3 "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hooks/guard_hook.py"`
+  （timeout 30s，远低于默认 60s 上限）；
+- `.claude-plugin/hooks/guard_hook.py`：协议适配器（纯标准库）——stdin 收
+  PreToolUse 事件 JSON，取 `tool_input.command` 调 guard.py，按 exit code 映射：
+  `0/allow → hook exit 0 + allow`（跳过权限弹窗）、`1/deny → hook exit 2 + deny`、
+  `2/ask → hook exit 2 + ask`（auto 模式下 ask 也强制弹窗）；guard.py 出错/超时 →
+  无输出、exit 0，落入正常权限流（fail-closed，**绝不自动 allow**）。
+  **传参逐项对齐**：只显式传 `--command` / `--cwd`，不覆盖服务地址参数，沿用
+  guard.py 内置默认 `http://127.0.0.1:8155`；阈值/fail-closed/L1 开关/审计路径
+  等经环境变量透传（见「配置」节）。审计默认落 `~/.phocinae-guard/audit.jsonl`
+  （避免散落到各项目目录），`PHOCINAE_GUARD_AUDIT=off` 禁用；
+- `.claude-plugin/skills/phocinae-guard/SKILL.md`：教 Claude 理解裁决、被 deny 后
+  改方案而非原样重试、危险命令自查清单。
+
+### 安装
+
+```bash
+# 本地开发/验证：claude --plugin-dir 直接挂本仓（团队分发走插件市场，后续迭代）
+claude --plugin-dir /home/hermes/dev/phocinae-guard
+```
+
+依赖：`python3` ≥ 3.8 在 PATH（hook 与 guard.py 均零第三方包）。不装插件时，可把
+上文「集成示例」里的 settings.json hook 片段直接贴进 `.claude/settings.json`，
+效果等同（插件只是把这个片段打包成一键安装）。
+
+### 自测
+
+```bash
+bash .claude-plugin/scripts/self_test.sh
+```
+
+纯本地、纯 CPU（不起真实模型服务）：两份 JSON 可解析+结构断言 → 服务地址对齐
+断言（guard 内置默认 127.0.0.1:8155、hook 不覆盖）→ guard 直连（良性 exit 0 /
+危险 exit 1 / 灰区 fail-closed）→ hook 链路（良性 exit 0+allow、危险 exit 2+deny、
+灰区 exit 2+deny）→ L1 端到端（本地 mock 起在 8155 验证默认 server 对齐与阈值
+映射，8155 被占则 SKIP）→ 审计 JSONL 校验。退出码 0 = 全绿。
+
+### 行为要点
+
+- 默认只有 L0 表在跑（`l1_enabled=false`）：白名单放行、黑名单 deny、其余灰区
+  fail-closed=deny——**装上即最严格**。体验过严时设 `PHOCINAE_GUARD_FAIL_CLOSED=ask`
+  放宽为人工确认档；L1 模型经命令审批域校准后再开 `PHOCINAE_GUARD_L1_ENABLED=1`。
+- deny 在任何权限模式下都生效（含 bypass/yolo 模式），`--confirm` 也无法覆盖；
+  被 deny 后 Claude 应依据理由改方案而不是重试同款。
+- 门只管 Bash 工具调用；Write/Edit/MCP 工具不受此 hook 约束（后续迭代可扩 matcher）。
+
+## 配置
+
+优先级：命令行 > 环境变量 > 配置文件 > 内置默认。
+
+| env | 默认 | 说明 |
+|-----|------|------|
+| `PHOCINAE_GUARD_SERVER` | `http://127.0.0.1:8155` | L1 服务基地址（自动拼 `/v1/systemone`） |
+| `PHOCINAE_GUARD_TIMEOUT` | `2.0` | L1 请求超时（秒） |
+| `PHOCINAE_GUARD_NOUL_THRESHOLD` | `0.65` | noul 放行阈值 |
+| `PHOCINAE_GUARD_DENY_AT` | `7.0` | score ≥ 此值 → deny |
+| `PHOCINAE_GUARD_ASK_AT` | `4.0` | score ≥ 此值且 < deny → ask |
+| `PHOCINAE_GUARD_TABLE` | 同目录 `l0_table.json` | L0 表路径 |
+| `PHOCINAE_GUARD_AUDIT` | `./phocinae-guard.audit.jsonl` | 审计路径（`off` 禁用） |
+| `PHOCINAE_GUARD_FAIL_CLOSED` | `deny` | 服务器不可用兜底：`deny`/`ask` |
+| `PHOCINAE_GUARD_CONFIG` | 无 | 配置文件路径（JSON，见 `guard.conf.example.json`） |
+
+对应命令行参数：`--server/--timeout/--noul-threshold/--deny-at/--ask-at/--table/--audit/--fail-closed/--config`。
+L0 表自定义：JSON 的 `whitelist`/`whitelist_prefix`/`blacklist` 三节各自覆盖内置默认节；
+`blacklist` 条目形如 `[名称, 正则, 说明]`。
+
+## 测试与验收
+
+```bash
+python3 mock_server.py --port 8155 --rules mock_rules.json &   # 本地 mock
+python3 test_guard.py -v                                        # 验收套件
+```
+
+replay battery：**15 条良性**（ls/git status/pytest/npm test/echo/…）、**24 条危险**
+（rm -rf /、curl|sh、sudo rm、git push --force、find -delete、dd、mkfs、fork bomb、
+chmod -R 777、shutdown、crontab -r、重定向覆写 /etc 等）、**4 条灰带**
+（npm install -g→ask、pip install→allow、curl 仅下载→allow、push --force-with-lease→ask）。
+
+验收实测（2026-10-08）：危险误放行 **0/24**，良性误拒 **0/15**（门槛 ≤1），
+L1 阈值映射 8 档全过（含边界 noul=0.65、score=4.0），服务器不可用 → fail-closed
+行为正确（白名单离线放行、黑名单离线 deny、灰区 deny/ask 可配），审计 JSONL 落盘齐全，
+自定义 L0 表与阈值 env 覆盖生效。测试全程只用本地 mock，不触碰任何真实服务。
+
+## 安全声明
+
+- **L0 正则表是确定性启发式，不是完备防护**：换行/字符串拼接/多阶段下载再执行/base64
+  混淆等手法可绕过正则；它负责「宁严勿松」的第一道确定性拦截，不是安全的全部。
+- **L1 判定依赖服务与模型质量**：noul/score 是模型输出，阈值映射只是把模型意见翻译成
+  门禁动作；服务不可用默认 fail-closed=deny（最严），可用 `PHOCINAE_GUARD_FAIL_CLOSED=ask`
+  放宽为人工确认档。
+- **不变式**：只有 allow 类能过门；`--confirm` 只升级 ask，deny 永不可覆盖。
+- **审计是事后追责材料**：JSONL 记录了时间戳+命令+cwd+判定+依据层，请定期复核；
+  审计写失败不阻断判定（宁可漏记不误杀），但会向 stderr 报错。
+- **生产建议**：关键路径配容器/权限/网络隔离；guard 是审批门，不是沙箱。
+- 已知局限：多行脚本整体喂入时判定按整段文本归一匹配；`--force-with-lease`、
+  普通 `find -delete`（非根/系统路径）等有意留给 L1 裁决，L0 不覆盖所有变体。
+
+## License
+
+Apache License 2.0 —— 见 `LICENSE`。版权 2026 phocinae-guard 作者（Nous Research）。

@@ -1,0 +1,6 @@
+[
+  {"pattern": "npm\\s+(i|install|uninstall)\\s+-g", "noul": 0.5, "score": 5.0, "note": "npm 全局安装 → ask"},
+  {"pattern": "pip\\d*\\s+install", "noul": 0.9, "score": 2.5, "note": "用户级 pip install → allow"},
+  {"pattern": "force-with-lease", "noul": 0.5, "score": 5.0, "note": "git push --force-with-lease → ask"},
+  {"pattern": "curl\\s+\\S+\\s+(-o|--output)\\s+\\S+", "noul": 0.9, "score": 2.0, "note": "curl 仅下载不执行 → allow"}
+]

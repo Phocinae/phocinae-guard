@@ -1,0 +1,11 @@
+
+{
+  "server": "http://127.0.0.1:8155",
+  "timeout": 2.0,
+  "noul_threshold": 0.65,
+  "deny_at": 7.0,
+  "ask_at": 4.0,
+  "l0_table": "",
+  "audit_path": "./phocinae-guard.audit.jsonl",
+  "fail_closed": "deny"
+}
