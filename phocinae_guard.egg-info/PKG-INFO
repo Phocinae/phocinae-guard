@@ -1,8 +1,11 @@
 Metadata-Version: 2.4
 Name: phocinae-guard
-Version: 0.1.1
+Version: 0.1.2
 Summary: Phocinae command approval gate for AI harnesses (L0 whitelist/blacklist)
 License: Apache-2.0
+Project-URL: Homepage, https://github.com/Phocinae/phocinae-guard
+Project-URL: Repository, https://github.com/Phocinae/phocinae-guard
+Project-URL: Bug Tracker, https://github.com/Phocinae/phocinae-guard/issues
 Requires-Python: >=3.9
 Description-Content-Type: text/markdown
 License-File: LICENSE
@@ -16,6 +19,8 @@ Crush / dsh / Gemini CLI / Qwen Code / Kimi Code / OpenHands / Hermes 的 hook /
 包装通用形态；本次交付为通用 CLI 形态（stdin 或 `--command`）。
 
 ## 定位
+
+斑海豹（[Phocinae-Largha-150M-v1](https://github.com/Phocinae/phocinae-largha-150m)）审批链路的 L0 确定性内核。
 
 - 审批门而非沙箱：只做「放行 / 拒绝 / 需人工确认」判定，不承诺隔离执行环境。
 - 单文件 `guard.py`，Python ≥ 3.8，**零第三方依赖**（纯标准库），可直接塞进任何 hook 管道。

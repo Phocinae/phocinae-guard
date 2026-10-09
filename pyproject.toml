@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phocinae-guard"
-version = "0.1.1"
+version = "0.1.2"
 description = "Phocinae command approval gate for AI harnesses (L0 whitelist/blacklist)"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -13,6 +13,11 @@ dependencies = []
 
 [project.scripts]
 phocinae-guard = "phocinae_guard.guard:main"
+
+[project.urls]
+Homepage = "https://github.com/Phocinae/phocinae-guard"
+Repository = "https://github.com/Phocinae/phocinae-guard"
+"Bug Tracker" = "https://github.com/Phocinae/phocinae-guard/issues"
 
 [tool.setuptools]
 packages = ["phocinae_guard"]
