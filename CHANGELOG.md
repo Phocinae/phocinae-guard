@@ -4,6 +4,36 @@ All notable changes to `phocinae-guard` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] — 2026-10-12
+
+### Fixed — the allowlist missed the Python form that Windows actually has
+
+Found by running the published 0.1.3 wheel rather than the source checkout:
+`python3 -m pytest -q` was allowed but `python -m pytest -q` was not, so it fell to
+the grey zone and, with L1 off (the documented default), failed closed to deny.
+
+`whitelist_prefix` carried `python3 -m pytest` and `python -m unittest` — the
+`python3` spelling next to a `python` one only for unittest. Windows has no
+`python3` command at all (python.org installs `python`, and the same holds inside
+Git Bash), so the most common way to run a test suite on Windows was denied. The
+allowlist now carries `python -m pytest`, `python3 -m pytest` and
+`python -m unittest`.
+
+Widening an allowlist needs a safety check: `_segment_hit` matches
+`text == prefix or text.startswith(prefix + " ")`, so it anchors on a token
+boundary. `python -m pytestx` is still undecidable rather than allowed, and
+`python -m pytest; rm -rf /` is still denied because the command is split into
+segments first and the second segment hits the blacklist. `python -m pip` is
+deliberately NOT added — installs belong in the grey zone, not the allowlist.
+
+Both the built-in `DEFAULT_L0` in `guard.py` and `l0_table.json` were updated; the
+bypass regression asserts the two agree, which is how the second copy was caught.
+
+Verified: `test_guard.py` 11/11 with ACCEPTANCE (benign 15 miss 0, dangerous 24
+false_allow 0), `tests/test_bypass_regression.py` 110/110, Claude Code plugin
+self-test 13/13, and `phocinae-mcp`'s `tests/test_l0_parity.py` 33/33 against the
+updated table.
+
 ## [0.1.3] — 2026-10-11
 
 ### Security — ten reproducible L0 bypasses are closed

@@ -38,7 +38,7 @@ import sys
 import urllib.error
 import urllib.request
 
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 
 EXIT_ALLOW = 0
 EXIT_DENY = 1
@@ -162,8 +162,8 @@ DEFAULT_L0 = {
         "ls", "cat", "head", "tail", "grep", "wc", "sort", "uniq", "du", "df",
         "file", "stat", "echo", "git status", "git diff", "git log", "git show",
         "git fetch", "git remote", "git stash", "git branch", "git tag",
-        "git shortlog", "git blame", "python3 -m pytest", "pytest",
-        "python -m unittest", "npm test", "npm run lint", "make test",
+        "git shortlog", "git blame", "python3 -m pytest", "python -m pytest",
+        "pytest", "python -m unittest", "npm test", "npm run lint", "make test",
     ],
     "blacklist": [
         ["rm_system",
