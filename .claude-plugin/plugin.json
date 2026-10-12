@@ -1,6 +1,6 @@
 {
   "name": "phocinae-guard",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "斑海豹命令审批门：PreToolUse(Bash) 拦截每一次 shell 命令，L0 确定性表先定夺、灰区才交本地模型，输出 allow/deny/ask。deny 优先、fail-closed、全程本机无外联。",
   "author": {
     "name": "Phocinae"

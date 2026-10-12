@@ -4,6 +4,27 @@ All notable changes to `phocinae-guard` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.6 — 2026-10-12
+
+- **修正 README 里的 L0 表条数**：原写"24 条黑名单正则"，而 `l0_table.json` 实际是
+  **26 条**（另有 40 条精确白名单 + 31 条前缀白名单）。数字是随加规则而变的，
+  而它**读起来很权威**，所以最少被质疑 —— 实测同一张表在 `phocinae-js` 的 README 里
+  被写成"26 条"、在这里被写成"24 条"，**两份互相矛盾**。
+
+  现在两处都改为实测值，并把三个分节的数量一并写全。
+
+- **修正 README 的自测命令与目录树**：
+  * 自测命令原为 `bash tests/cc_plugin_self_test.sh/self_test.sh` —— 那个路径下
+    没有 `self_test.sh`（真实文件是 `tests/cc_plugin_self_test.sh`），
+    是两次改名留下的拼接残迹，**照抄必失败**。
+  * 目录树原把 `hooks/`、`skills/`、`scripts/` 画在 `.claude-plugin/` 之下，
+    而 `git ls-files` 显示 `.claude-plugin/` 只有 `plugin.json`，
+    hooks / skills / tests 都在仓库根。已按实际布局重画。
+
+- 测试残留（`phocinae-guard-test-table.json`、`phocinae-guard-test.audit.jsonl`）
+  不再留在工作区。
+
+
 ## [0.1.5] — 2026-10-12
 
 ### Fixed — a dead link in the README

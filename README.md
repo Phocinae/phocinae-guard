@@ -52,7 +52,7 @@ Crush / dsh / Gemini CLI / Qwen Code / Kimi Code / OpenHands / Hermes 的 hook /
 | 4–6  | deny | ask | ask |
 | <4   | deny | ask | allow |
 
-## L0 表内容概要（`l0_table.json`，24 条黑名单正则）
+## L0 表内容概要（`l0_table.json`：40 条精确白名单 + 31 条前缀白名单 + 26 条黑名单正则）
 
 | 类 | 覆盖 |
 |----|------|
