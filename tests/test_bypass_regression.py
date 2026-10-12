@@ -53,10 +53,32 @@ sys.path.insert(0, REPO)
 PASS = 0
 FAIL = 0
 DETAILS = []
+_TEMP_DIRS = []
+
+
+def _cleanup_temp_dirs():
+    """幂等清理本模块创建的临时目录。
+
+    为什么不用 atexit 就完事：实测两处模块级 mkdtemp 都注册了 atexit，临时目录
+    仍会累积（连跑几次后系统 temp 里堆了 21 个）。atexit 在某些结束路径下不执行，
+    所以 main() 里另有 try/finally 显式清理；atexit 保留只作兜底。
+    """
+    for d in _TEMP_DIRS:
+        if d and os.path.isdir(d):
+            shutil.rmtree(d, ignore_errors=True)
+    del _TEMP_DIRS[:]
+
+
+def _mkdtemp(prefix):
+    d = tempfile.mkdtemp(prefix=prefix, dir=tempfile.gettempdir())
+    _TEMP_DIRS.append(d)
+    return d
+
+
+atexit.register(_cleanup_temp_dirs)
 
 # 所有临时文件都落在系统临时目录，测试结束自清理
-AUDIT_DIR = tempfile.mkdtemp(prefix="phocinae-guard-regression-")
-atexit.register(lambda: shutil.rmtree(AUDIT_DIR, ignore_errors=True))
+AUDIT_DIR = _mkdtemp("phocinae-guard-regression-")
 _servers = {}
 _seq = [0]
 
@@ -518,7 +540,7 @@ def _t16_normalize_keeps_command_boundaries():
 
 
 # ------------------------------------------------------------------ 小工具
-AUDIT_DIR = tempfile.mkdtemp(prefix="phocinae-guard-regression-")
+AUDIT_DIR = _mkdtemp("phocinae-guard-regression-")
 _servers = {}
 _seq = [0]
 
@@ -608,13 +630,17 @@ def case_name(fn):
 
 
 def main():
-    for fn in ALL_TESTS:
-        _run_one(fn)
-    _stop_mock()
-    print("BYPASS-REGRESSION: pass=%d fail=%d" % (PASS, FAIL))
-    for line in DETAILS:
-        print(line)
-    return 1 if FAIL else 0
+    # 显式清理，不依赖 atexit：atexit 在某些结束路径下不执行，实测临时目录会累积。
+    try:
+        for fn in ALL_TESTS:
+            _run_one(fn)
+        _stop_mock()
+        print("BYPASS-REGRESSION: pass=%d fail=%d" % (PASS, FAIL))
+        for line in DETAILS:
+            print(line)
+        return 1 if FAIL else 0
+    finally:
+        _cleanup_temp_dirs()
 
 
 if __name__ == "__main__":
