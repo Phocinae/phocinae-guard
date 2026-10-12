@@ -39,6 +39,12 @@ audit.jsonl
 guard.conf.json
 phocinae_guard.conf.json
 
+# Runtime state produced by the test suites themselves (a scratch L0 table and an
+# audit log). The audit log records every command and verdict, so it must not be
+# committed; it was accidentally tracked once and is now ignored.
+phocinae-guard-test-table.json
+phocinae-guard-test.audit.jsonl
+
 # ---- Release artifacts ----
 # NOTE: the wheel/sdist files currently committed under dist/ are intentionally
 # shipped release artifacts for this repo (see git history, e.g.
