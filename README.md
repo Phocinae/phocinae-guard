@@ -21,7 +21,7 @@ Crush / dsh / Gemini CLI / Qwen Code / Kimi Code / OpenHands / Hermes 的 hook /
 
 ## 定位
 
-斑海豹（[Phocinae-Largha-150M-v1](https://github.com/Phocinae/phocinae-largha-150m)）审批链路的 L0 确定性内核。
+斑海豹（[Phocinae-Largha-150M-v1](https://github.com/Phocinae/Phocinae-Largha-150M-v1)）审批链路的 L0 确定性内核。
 
 - 审批门而非沙箱：只做「放行 / 拒绝 / 需人工确认」判定，不承诺隔离执行环境。
 - 单文件 `guard.py`，Python ≥ 3.8，**零第三方依赖**（纯标准库），可直接塞进任何 hook 管道。

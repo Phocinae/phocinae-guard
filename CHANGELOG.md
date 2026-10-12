@@ -4,6 +4,23 @@ All notable changes to `phocinae-guard` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] — 2026-10-12
+
+### Fixed — a dead link in the README
+
+The README described this package as the L0 kernel of the approval chain for
+`Phocinae-Largha-150M-v1` and linked to
+`https://github.com/Phocinae/phocinae-largha-150m` — all lowercase. GitHub
+repository paths are case-sensitive, so that is a 404; the canonical name is
+`Phocinae/Phocinae-Largha-150M-v1`. The link text was right and the target was
+dead, which is the kind of thing a reader notices and a test never does.
+
+Found by auditing every link and image in every README across the repositories.
+Two such links existed in total; the other was in `codebuddy-phocinae`.
+
+This README ships to PyPI inside the package metadata, so correcting it means a
+release rather than a docs commit.
+
 ## [0.1.4] — 2026-10-12
 
 ### Fixed — the allowlist missed the Python form that Windows actually has
