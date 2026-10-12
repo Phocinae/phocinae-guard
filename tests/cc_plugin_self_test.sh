@@ -16,7 +16,7 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # 解释器探测：Windows 上没有 python3（Git bash 里也没有）。
-# 优先 $PHOCINAE_CC_PY，否则依次试 $PY / python / py -3。
+# 优先 ${PHOCINAE_CC_PY}，否则依次试 $PY / python / py -3。
 if [ -n "${PHOCINAE_CC_PY:-}" ]; then
     PY="$PHOCINAE_CC_PY"
 else
@@ -56,7 +56,7 @@ ok()   { PASS=$((PASS+1)); printf 'PASS  %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf 'FAIL  %s\n' "$1"; }
 skip() { SKIP=$((SKIP+1)); printf 'SKIP  %s\n' "$1"; }
 
-echo "== phocinae-guard Claude Code 插件自测（root=$ROOT）=="
+echo "== phocinae-guard Claude Code 插件自测（root=${ROOT}）=="
 
 # ---------------------------------------------------------------- 1) JSON 解析
 if "$PY" -c 'import json,sys; json.load(open(sys.argv[1],encoding="utf-8"))' \
