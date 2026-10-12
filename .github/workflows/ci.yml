@@ -59,6 +59,24 @@ jobs:
       - name: Bypass / regression suite (B3 / B4 / B13 / B16)
         run: python tests/test_bypass_regression.py
 
+      # The suites above exercise guard.py and the L0 layer; neither reads
+      # .claude-plugin/plugin.json or hooks/hooks.json, and neither checks the
+      # Claude Code hook exit-code contract. So a renamed manifest key, a broken
+      # hooks.json, or a wrong exit code could ship with every suite green — the
+      # plugin would simply fail to load for users. This is the only check that
+      # covers the plugin packaging and the hook chain end to end (16 assertions).
+      #
+      # shell: bash is required: the script is POSIX, and a Windows runner's
+      # default PowerShell cannot parse it (the same mistake that turned the
+      # parity step in phocinae-cli red on Windows only).
+      #
+      # It exits 0 on SKIP, 1 on any FAIL, so a busy port 8155 cannot mask a
+      # failure; the L1 section skips only when it cannot bind 8155, and the
+      # remaining 12 assertions still run and still gate.
+      - name: Claude Code plugin self-test (manifest + hook chain)
+        shell: bash
+        run: bash tests/cc_plugin_self_test.sh
+
   fuzz:
     name: fuzz / robustness (py3.12 on ${{ matrix.os }})
     # ~98 s of wall clock measured locally, so it does not pay for itself on

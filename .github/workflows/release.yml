@@ -52,6 +52,15 @@ jobs:
       - name: Bypass / regression suite (B3 / B4 / B13 / B16)
         run: python tests/test_bypass_regression.py
 
+      # The plugin manifests and the Claude Code hook exit-code contract are not
+      # covered by the two suites above, so without this a tag could publish a
+      # wheel whose .claude-plugin/hooks wiring is broken. Same reasoning as the
+      # three-platform gate in dsh-phocinae's publish workflow: a tag is the last
+      # point at which an unchecked artifact can still be stopped.
+      - name: Claude Code plugin self-test (manifest + hook chain)
+        shell: bash
+        run: bash tests/cc_plugin_self_test.sh
+
       # tests/fuzz_robustness.py (~100 s) is deliberately NOT part of the
       # release gate: it already runs on every push to main, and a slow
       # long-running suite is exactly the thing that turns a release into a
