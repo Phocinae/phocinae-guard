@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "phocinae-guard L0 确定性表：whitelist=精确放行；whitelist_prefix=前缀放行；blacklist=[name, 正则, 说明] 先于白名单判定（deny 优先）。文件各节覆盖内置默认对应节。",
+  "note": "phocinae-guard L0 确定性表：whitelist=精确放行；whitelist_prefix=前缀放行；blacklist=[name, 正则, 说明] 先于白名单判定（deny 优先）。默认**合并**语义：文件各节追加到内置默认对应节（自定义一条规则不会再丢掉内置的 rm -rf / 等拦截）；要旧版整节替换语义时显式写 \"replace\": true（顶层，对三节都生效）或 \"<节名>_replace\": true（如 blacklist_replace）。判定细节：黑名单对原串+归一化串+每个命令段都跑；白名单要求每一段都命中；换行/CRLF/引号外制表符视为命令分隔符。",
   "whitelist": [
     "ls",
     "ls -a",
@@ -78,7 +78,7 @@
   "blacklist": [
     [
       "rm_system",
-      "(^|[;&|]\\s*)rm\\s+(-\\S+\\s+)*(/(\\s|$|\\*)|\\s*(~|\\$HOME)(/\\*|$)|/(etc|usr|var|boot|bin|sbin|lib|opt|root)(/|$))",
+      "(^|[;&|]\\s*)rm[ \\t]+(-\\S+\\s+)*(/(\\s|$|\\*)|\\s*(~|\\$HOME)(/\\*|\\s|$)|/(etc|usr|var|boot|bin|sbin|lib|opt|root)(/|$))",
       "rm 删除根目录/家目录/系统路径"
     ],
     [
@@ -93,12 +93,12 @@
     ],
     [
       "pipe_to_sh",
-      "[^;&|]\\s*\\|\\s*(sudo\\s+)?(ba|da|k|z|c)?sh\\b",
+      "[^;&|]\\s*\\|\\s*(sudo\\s+)*(?:\"|\\')?\\\\?(ba|da|k|z|c)?sh\\b",
       "命令管道喂给 shell（curl|sh 一类）"
     ],
     [
       "curl_pipe_sh",
-      "(^|[;&|]\\s*)(curl|wget|fetch|lynx|w3m)\\b[^;&|]*\\|\\s*(sudo\\s+)?(ba|da|k|z|c)?sh\\b",
+      "(^|[;&|]\\s*)(curl|wget|fetch|lynx|w3m)\\b[^;&|]*\\|\\s*(sudo\\s+)*(?:\"|\\')?\\\\?(ba|da|k|z|c)?sh\\b",
       "curl/wget 下载即执行"
     ],
     [
@@ -173,12 +173,22 @@
     ],
     [
       "write_redirect_system",
-      "\\s>>?\\s*/(etc|usr|var|boot|bin|sbin|lib|opt|root)\\S*",
+      ">>?\\s*/(etc|usr|var|boot|bin|sbin|lib|opt|root)\\S*",
       "重定向覆写系统文件"
     ],
     [
+      "outfile_system",
+      "(^|\\s)(-o|--output)\\s*=?\\s*/(etc|usr|var|boot|bin|sbin|lib|opt|root)(/|\\s|$)",
+      "输出重定向到系统路径（-o/--output）"
+    ],
+    [
+      "exfil_stdin",
+      "(^|[;&|]\\s*)(curl|wget|fetch)\\b[^;&|]*(--data(-binary|-ascii|-raw|-urlencode)?|-d|-T|--upload-file|--post-file)\\s*=?\\s*@?-(?=\\s|$|[;&|])",
+      "curl/wget 把 stdin（管道/私钥）外发"
+    ],
+    [
       "eval_curl",
-      "eval\\s+[\"'`]?\\s*\\$?\\s*\\(\\s*(curl|wget)\\b",
+      "eval\\s+[\\\"'\\`]?\\s*\\$?\\s*\\(\\s*(curl|wget)\\b",
       "eval $(curl ...)"
     ],
     [
@@ -188,7 +198,7 @@
     ],
     [
       "sh_c_curl",
-      "(ba)?sh\\s+-c\\s+[\"']\\s*(curl|wget)\\b",
+      "(ba)?sh\\s+-c\\s+[\\\"']\\s*(curl|wget)\\b",
       "sh -c 'curl ...'"
     ],
     [

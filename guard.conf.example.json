@@ -7,5 +7,6 @@
   "ask_at": 4.0,
   "l0_table": "",
   "audit_path": "./phocinae-guard.audit.jsonl",
-  "fail_closed": "deny"
+  "fail_closed": "deny",
+  "l1_enabled": false
 }

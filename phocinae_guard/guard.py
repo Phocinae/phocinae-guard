@@ -9,15 +9,22 @@ Qwen Code / Kimi Code / OpenHands / Hermes 的 hook / 包装集成。
 
 三层判定：
   L0    纯离线确定性表（白名单 + 黑名单 + 危险正则）→ 直接 allow / deny；
+        L0 先对「原串 + 归一化串 + 每个命令段」跑黑名单，再要求**每一段**都
+        命中白名单才 allow（`ls\nrm -rf /`、`cat x | "sh"` 一类不再被首 token
+        白名单带过）；换行视为命令分隔符，不折叠成空格。
   L1    L0 不能定夺 → POST /v1/systemone 问两题（noul 放行概率 + score 风险期望）
         → 阈值映射 deny / ask / allow；
   fail-closed  服务器不可用 → 除白名单外一律 deny/ask（PHOCINAE_GUARD_FAIL_CLOSED）。
 不变式：只有 allow 类能过门（exit 0）；deny / ask 均非零退出。
 
+env 布尔（如 PHOCINAE_GUARD_L1_ENABLED）只认 1/true/yes/on（大小写与首尾空白
+无关），其余（含 0/false/off/no）一律按「关」——显式关闭必须真的关。
+
 exit code: 0=allow  1=deny  2=ask（需人工确认，给 hook 的阻塞态）  3=用法/配置错误
 stdout: 一行 JSON（--text 换人读格式）
 审计: JSONL 追加（ts + command + cwd + decision + 依据层 + 原因），
-      默认 ./phocinae-guard.audit.jsonl。
+      默认 ./phocinae-guard.audit.jsonl；写失败默认只告警，
+      --strict-audit / PHOCINAE_GUARD_STRICT_AUDIT=1 时改为报错退出。
 
 纯标准库（Python >= 3.8），零第三方依赖。
 """
@@ -31,7 +38,7 @@ import sys
 import urllib.error
 import urllib.request
 
-VERSION = "0.1.0"
+VERSION = "0.1.3"
 
 EXIT_ALLOW = 0
 EXIT_DENY = 1
@@ -51,6 +58,25 @@ BUILTIN_DEFAULTS = {
     "config": "",
 }
 
+def _die(msg):
+    sys.stderr.write("guard: %s\n" % msg)
+    raise SystemExit(EXIT_ERROR)
+
+
+def _env_bool(raw):
+    """env 布尔解析：只有 1/true/yes/on（大小写与首尾空白无关）为真。
+
+    与 phocinae-mcp server.py 的 _env_bool 同口径。刻意不用 bool(raw)：
+    "0"/"false"/"off"/"no"/"none" 这类显式关闭必须真的关掉；
+    未设置/空串/无法识别的取值一律按「关」处理（默认关）。
+    """
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 ENV_KEYS = {
     "PHOCINAE_GUARD_SERVER": ("server", str),
     "PHOCINAE_GUARD_TIMEOUT": ("timeout", float),
@@ -60,9 +86,13 @@ ENV_KEYS = {
     "PHOCINAE_GUARD_TABLE": ("l0_table", str),
     "PHOCINAE_GUARD_AUDIT": ("audit_path", str),
     "PHOCINAE_GUARD_FAIL_CLOSED": ("fail_closed", str),
-    "PHOCINAE_GUARD_L1_ENABLED": ("l1_enabled", bool),
+    "PHOCINAE_GUARD_L1_ENABLED": ("l1_enabled", _env_bool),
     "PHOCINAE_GUARD_CONFIG": ("config", str),
 }
+
+# 审计严格模式（B16）：不放进 ENV_KEYS，因为它不是判定配置的一部分，
+# 由 main() 单独解析（默认宽松，`--strict-audit` / env 打开）。
+ENV_STRICT_AUDIT = "PHOCINAE_GUARD_STRICT_AUDIT"
 
 CLI_KEY_CASTS = {
     "server": str,
@@ -73,14 +103,9 @@ CLI_KEY_CASTS = {
     "l0_table": str,
     "audit_path": str,
     "fail_closed": str,
-    "l1_enabled": bool,
+    "l1_enabled": _env_bool,
     "config": str,
 }
-
-
-def _die(msg):
-    sys.stderr.write("guard: %s\n" % msg)
-    raise SystemExit(EXIT_ERROR)
 
 
 def load_config(cli_args=None):
@@ -108,7 +133,7 @@ def load_config(cli_args=None):
             continue
         try:
             cfg[key] = cast(raw)
-        except ValueError:
+        except (ValueError, TypeError):
             _die("bad env %s=%r" % (env_name, raw))
     for key, cast in CLI_KEY_CASTS.items():
         if cli_args.get(key) is not None:
@@ -142,7 +167,7 @@ DEFAULT_L0 = {
     ],
     "blacklist": [
         ["rm_system",
-         r'(^|[;&|]\s*)rm\s+(-\S+\s+)*(/(\s|$|\*)|\s*(~|\$HOME)(/\*|$)|/(etc|usr|var|boot|bin|sbin|lib|opt|root)(/|$))',
+         r'(^|[;&|]\s*)rm[ \t]+(-\S+\s+)*(/(\s|$|\*)|\s*(~|\$HOME)(/\*|\s|$)|/(etc|usr|var|boot|bin|sbin|lib|opt|root)(/|$))',
          "rm 删除根目录/家目录/系统路径"],
         ["rm_dot",
          r'(^|[;&|]\s*)rm\s+(-\S+\s+)*\.{1,2}(\s|$)',
@@ -151,10 +176,10 @@ DEFAULT_L0 = {
          r'(^|[;&|]\s*)sudo\s+(rm|dd|mkfs(\.[a-z0-9]+)?|fdisk|sfdisk|parted|wipefs|shutdown|reboot|poweroff|halt)\b',
          "sudo 破坏性操作"],
         ["pipe_to_sh",
-         r'[^;&|]\s*\|\s*(sudo\s+)?(ba|da|k|z|c)?sh\b',
+         r'[^;&|]\s*\|\s*(sudo\s+)*(?:"|\')?\\?(ba|da|k|z|c)?sh\b',
          "命令管道喂给 shell（curl|sh 一类）"],
         ["curl_pipe_sh",
-         r'(^|[;&|]\s*)(curl|wget|fetch|lynx|w3m)\b[^;&|]*\|\s*(sudo\s+)?(ba|da|k|z|c)?sh\b',
+         r'(^|[;&|]\s*)(curl|wget|fetch|lynx|w3m)\b[^;&|]*\|\s*(sudo\s+)*(?:"|\')?\\?(ba|da|k|z|c)?sh\b',
          "curl/wget 下载即执行"],
         ["git_force_push",
          r'git\s+push\b[^;&|]*(--force(\s|$)|(\s|^)-f(\s|$))',
@@ -199,8 +224,14 @@ DEFAULT_L0 = {
          r'crontab\s+-\S*r\b',
          "crontab -r 清空计划任务"],
         ["write_redirect_system",
-         r'\s>>?\s*/(etc|usr|var|boot|bin|sbin|lib|opt|root)\S*',
+         r'>>?\s*/(etc|usr|var|boot|bin|sbin|lib|opt|root)\S*',
          "重定向覆写系统文件"],
+        ["outfile_system",
+         r'(^|\s)(-o|--output)\s*=?\s*/(etc|usr|var|boot|bin|sbin|lib|opt|root)(/|\s|$)',
+         "输出重定向到系统路径（-o/--output）"],
+        ["exfil_stdin",
+         r'(^|[;&|]\s*)(curl|wget|fetch)\b[^;&|]*(--data(-binary|-ascii|-raw|-urlencode)?|-d|-T|--upload-file|--post-file)\s*=?\s*@?-(?=\s|$|[;&|])',
+         "curl/wget 把 stdin（管道/私钥）外发"],
         ["eval_curl",
          r"eval\s+[\"'\`]?\s*\$?\s*\(\s*(curl|wget)\b",
          "eval $(curl ...)"],
@@ -217,8 +248,24 @@ DEFAULT_L0 = {
 }
 
 # ------------------------------------------------------------------ L0 表加载与判定
+def _flag(obj, key):
+    """读 JSON 里的布尔开关；非 bool 的取值按假处理（宁松勿误伤配置解析）。"""
+    return obj.get(key) is True
+
+
 def load_l0_table(path):
-    """加载 L0 表（JSON）。缺文件 → 内置默认表；文件各节覆盖内置对应节。"""
+    """加载 L0 表（JSON）。缺文件 → 内置默认表。
+
+    默认为**合并**语义（B13）：文件里的 `whitelist` 追加进内置白名单，
+    `whitelist_prefix` 追加，`blacklist` 追加到内置 25 条正则之后——用户加一条
+    自定义规则不会再把 `rm -rf /` 一类的内置拦截整节丢掉。
+
+    需要旧版「整节替换」语义时显式声明 `"replace": true`：可写在顶层
+    （对所有节生效），也可按节写在 `<节名>_replace`，例如
+        {"whitelist": [...], "whitelist_replace": true}     # 只要这一节替换
+        {"blacklist": [...], "blacklist_replace": false}    # 显式合并（默认）
+        {"replace": true, "blacklist": [...]}               # 顶层：三节都替换
+    """
     table = {
         "whitelist": set(DEFAULT_L0["whitelist"]),
         "whitelist_prefix": list(DEFAULT_L0["whitelist_prefix"]),
@@ -239,10 +286,30 @@ def load_l0_table(path):
         _die("L0 table %s is not valid JSON: %s" % (path, exc))
     if not isinstance(data, dict):
         _die("L0 table %s must be a JSON object" % path)
+    top_replace = _flag(data, "replace")
+
+    def _replace_section(section):
+        # 顶层 replace 或该节的 <节名>_replace 为 true → 替换；否则合并。
+        if top_replace:
+            return True
+        return _flag(data, section + "_replace")
+
     if isinstance(data.get("whitelist"), list):
-        table["whitelist"] = set(str(x) for x in data["whitelist"])
+        entries = set(str(x) for x in data["whitelist"])
+        if _replace_section("whitelist"):
+            table["whitelist"] = entries
+        else:
+            table["whitelist"] |= entries
     if isinstance(data.get("whitelist_prefix"), list):
-        table["whitelist_prefix"] = [str(x) for x in data["whitelist_prefix"]]
+        entries = [str(x) for x in data["whitelist_prefix"]]
+        if _replace_section("whitelist_prefix"):
+            table["whitelist_prefix"] = entries
+        else:
+            merged = list(table["whitelist_prefix"])
+            for entry in entries:
+                if entry not in merged:
+                    merged.append(entry)
+            table["whitelist_prefix"] = merged
     if isinstance(data.get("blacklist"), list):
         entries = []
         for item in data["blacklist"]:
@@ -250,32 +317,206 @@ def load_l0_table(path):
                 entries.append([str(item[0]), str(item[1]),
                                 str(item[2]) if len(item) > 2 else str(item[1])])
         if entries:
-            table["blacklist"] = entries
+            if _replace_section("blacklist"):
+                table["blacklist"] = entries
+            else:
+                # 追加，且不允许自定义条目把内置条目顶掉（保持内置拦截常在）
+                existing = set(entry[0] for entry in table["blacklist"])
+                table["blacklist"] += [e for e in entries if e[0] not in existing]
     return table
 
 
+# 转义换行（行继续）与行内字面 backslash-n：都不是命令分隔符。
+_ESC_NL = "\x00esc_nl\x00"
+_LIT_NL = "\x00lit_nl\x00"
+# 真正的命令分隔符 / 管道符（不含引号内与转义后的字符）。
+_SEPARATORS = ("&&", "||", ";", "|")
+
+
+def split_commands(cmd):
+    """把命令行按**未转义、未加引号**的 `&&` `||` `;` `|` 拆成多段。
+
+    用于「逐段过黑名单」：`ls ; \\rm -rf /` 的第二段会被单独看到。
+    引号内的分隔符（`echo "a|b"`）与反斜杠转义的分隔符保持原样，
+    避免把合法命令误判成多段。
+    """
+    segs = []
+    buf = []
+    quote = None
+    i = 0
+    n = len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if quote:
+            # 引号内：只有配对的引号能关闭引用，其余原样保留
+            if ch == quote:
+                quote = None
+            buf.append(ch)
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "\\":
+            # 转义：字符原样保留，且不参与分隔符识别（`rm\ -rf` / `a\|b`）
+            if i + 1 < n:
+                buf.append(ch)
+                buf.append(cmd[i + 1])
+                i += 2
+            else:
+                buf.append(ch)
+                i += 1
+            continue
+        sep = None
+        for cand in _SEPARATORS:
+            if cmd.startswith(cand, i):
+                sep = cand
+                break
+        if sep:
+            segs.append("".join(buf))
+            buf = []
+            i += len(sep)
+            continue
+        buf.append(ch)
+        i += 1
+    segs.append("".join(buf))
+    return [seg.strip() for seg in segs if seg.strip()]
+
+
+def _split_command_segments(cmd):
+    """按段返回命令：新行（normalize 后为 ` ; `）与 `;`/`&&`/`||`/`|` 均分段。"""
+    return split_commands(cmd)
+
+
+def _map_unquoted(text, fn, pair_escapes=True):
+    """对 `text` 中**引号外**的字符跑 `fn(ch)`，引号内原样保留。
+
+    反斜杠转义对（`\\x`）整体保留，避免把被转义的引号当成引号边界。
+    """
+    out = []
+    quote = None
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if quote:
+            if ch == quote:
+                quote = None
+            out.append(ch)
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if pair_escapes and ch == "\\" and i + 1 < n:
+            out.append(ch)
+            out.append(text[i + 1])
+            i += 2
+            continue
+        out.append(fn(ch))
+        i += 1
+    return "".join(out)
+
+
 def normalize(cmd):
-    return re.sub(r"\s+", " ", cmd.strip())
+    """归一化**但不破坏命令边界**：
+      - 转义换行（`\\` + 换行）与字面 `\\n` 保留，不作为分隔符；
+      - `\\r\\n` / `\\n` / `\\r` → ` ; `（换行 = 新命令，不是普通空白）；
+      - 引号外、未转义的制表符也视为命令分隔 → ` ; `（`ls\\trm -rf /` 是两条
+        命令，旧实现把它折叠成 `ls rm -rf /`，正好绕开锚定 `(^|[;&|]\\s*)` 的规则）；
+      - 其余行内空白（空格/多空格）折叠为一个空格。
+
+    注意：换行若折叠成空格，`ls\\nrm -rf /` 会变成 `ls rm -rf /`，黑名单里
+    锚定 `(^|[;&|]\\s*)` 的 `rm` 规则就再也匹配不上——旧实现正是这样被绕过的。
+    """
+    if not isinstance(cmd, str):
+        cmd = str(cmd)
+    cmd = (cmd.replace("\x00", "")
+              .replace("\\\r\n", _ESC_NL)
+              .replace("\\\n", _ESC_NL)
+              .replace("\\n", _LIT_NL))
+    cmd = re.sub(r"\r\n|\r|\n", " ; ", cmd)
+    cmd = _map_unquoted(cmd, lambda ch: " ; " if ch == "\t" else ch)
+    text = re.sub(r"[ \f\v]+", " ", cmd).strip()
+    return text.replace(_ESC_NL, "\\\n").replace(_LIT_NL, "\\n")
 
 
-def l0_judge(cmd, table):
-    cmd = normalize(cmd)
-    if not cmd:
-        return "deny", "空命令", "L0"
+def _blacklist_candidates(cmd, segs):
+    """黑名单要检查的候选串：原串 + 归一化串 + 每一段（去前导 `\\`）。"""
+    out = [cmd]
+    norm = normalize(cmd)
+    if norm and norm not in out:
+        out.append(norm)
+    for seg in segs or []:
+        out.append(seg)
+        # shell 里 `\\rm` 与 `rm` 等价（还有 `\\\\rm`），去掉前导转义再查一遍
+        stripped = seg
+        while stripped.startswith("\\"):
+            stripped = stripped[1:]
+        if stripped and stripped not in out:
+            out.append(stripped)
+    return out
+
+
+def _snippet(text, limit=160):
+    """reason 里回显命中片段时截断，避免 100KB 命令把审计/日志撑爆。"""
+    text = text.replace("\n", "\\n").replace("\r", "\\r")
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "…(%d 字符已截断)" % (len(text) - limit)
+
+
+def _blacklist_hit(table, candidates):
     for name, pattern, note in table["blacklist"]:
         try:
-            if re.search(pattern, cmd, re.IGNORECASE):
-                return "deny", "L0 黑名单 %s：%s" % (name, note), "L0"
+            rx = re.compile(pattern, re.IGNORECASE)
         except re.error as exc:
             sys.stderr.write("guard: bad L0 pattern %s (%s): %s\n"
                              % (name, pattern, exc))
             continue
-    if cmd in table["whitelist"]:
-        return "allow", "L0 白名单精确命中", "L0"
+        for text in candidates:
+            if text and rx.search(text):
+                return name, note, text
+    return None
+
+
+def _segment_hit(text, table):
+    """单段是否命中白名单（精确或前缀）。命中返回理由，否则 None。"""
+    if text in table["whitelist"]:
+        return "L0 白名单精确命中"
     for prefix in sorted(table["whitelist_prefix"], key=len, reverse=True):
-        if cmd == prefix or cmd.startswith(prefix + " "):
-            return "allow", "L0 白名单前缀命中：%s" % prefix, "L0"
-    return None, "L0 不能定夺", "L0"
+        if text == prefix or text.startswith(prefix + " "):
+            return "L0 白名单前缀命中：%s" % prefix
+    return None
+
+
+def l0_judge(cmd, table):
+    """L0 判定：黑名单（全串 + 逐段）优先，之后白名单**逐段**校验。
+
+    旧实现只看归一化后的整串且只匹配首 token，于是
+    `ls\\nrm -rf /`、`cat x | "sh"`、`echo pwned>/etc/passwd` 都会被
+    首 token 白名单放行。现在：
+      1) 黑名单同时对原串、归一化串、每一段（含去前导 `\\`）跑；
+      2) 只有在黑名单全不中的前提下才看白名单；
+      3) 白名单要求**每一段**都命中——第 1 段命中不能给第 2 段背书。
+    """
+    segs = _split_command_segments(normalize(cmd))
+    if not segs:
+        return "deny", "空命令", "L0"
+    hit = _blacklist_hit(table, _blacklist_candidates(cmd, segs))
+    if hit is not None:
+        name, note, matched = hit
+        return ("deny", "L0 黑名单 %s：%s（命中：%s）"
+                % (name, note, _snippet(matched)), "L0")
+    for seg in segs:
+        reason = _segment_hit(seg, table)
+        if reason is None:
+            return None, "L0 不能定夺", "L0"
+    return "allow", "L0 白名单逐段命中（%s）" % segs[0], "L0"
 
 # ------------------------------------------------------------------ L1：/v1/systemone 两问
 def systemone_ask(cfg, command, cwd):
@@ -407,7 +648,13 @@ def decide(command, cwd, cfg):
 
 
 # ------------------------------------------------------------------ 审计
-def audit(cfg, result):
+def audit(cfg, result, strict=False):
+    """写审计 JSONL。
+
+    默认宽松：写失败只在 stderr 告警，判定不变（宁可漏记不误杀）。
+    strict=True（`--strict-audit` / PHOCINAE_GUARD_STRICT_AUDIT=1）时：
+    审计写不下去 → 直接报错退出（exit 3），避免「以为在记，其实没记」。
+    """
     path = cfg["audit_path"]
     if not path or str(path).lower() in ("off", "none"):
         return
@@ -424,9 +671,13 @@ def audit(cfg, result):
         "confirm": bool(result.get("confirm")),
     }
     try:
-        with open(path, "a", encoding="utf-8") as fh:
+        # newline=""：JSONL 每条记录固定以 \n 结尾，跨平台都能逐行解析
+        with open(path, "a", encoding="utf-8", newline="") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except OSError as exc:
+        if strict:
+            _die("audit write failed (%s): %s（--strict-audit 下审计失败即失败）"
+                 % (path, exc))
         # 审计失败不阻断判定（宁可漏记不误杀）
         sys.stderr.write("guard: audit write failed (%s): %s\n" % (path, exc))
 
@@ -472,6 +723,14 @@ def build_parser():
                    help="审计 JSONL 路径（默认 ./phocinae-guard.audit.jsonl；off 禁用）")
     p.add_argument("--fail-closed", choices=("deny", "ask"),
                    help="服务器不可用时的兜底（默认 deny）")
+    p.add_argument("--l1-enabled", dest="l1_enabled", action="store_true",
+                   default=None,
+                   help="启用 L1（灰区交 /v1/systemone 裁决；默认关，"
+                        "env PHOCINAE_GUARD_L1_ENABLED=1/true/yes/on）")
+    p.add_argument("--strict-audit", dest="strict_audit", action="store_true",
+                   default=None,
+                   help="审计写失败即报错退出（默认只告警；"
+                        "env PHOCINAE_GUARD_STRICT_AUDIT）")
     p.add_argument("--version", action="store_true", help="打印版本")
     return p
 
@@ -482,6 +741,8 @@ def main(argv=None):
         print("phocinae-guard L0 " + VERSION)
         return EXIT_ALLOW
     cfg = load_config(vars(args))
+    strict_audit = (args.strict_audit if args.strict_audit is not None
+                    else _env_bool(os.environ.get(ENV_STRICT_AUDIT)))
     command = args.command if args.command is not None else sys.stdin.read().strip()
     if not command:
         sys.stderr.write("guard: no command (use --command or pipe via stdin)\n")
@@ -498,7 +759,7 @@ def main(argv=None):
             result["reason"] += "；--confirm 人工确认放行"
         elif result["decision"] == "deny":
             result["reason"] += "（--confirm 不能覆盖 deny）"
-    audit(cfg, result)
+    audit(cfg, result, strict=strict_audit)
     emit(result, text=args.text)
     return {"allow": EXIT_ALLOW, "deny": EXIT_DENY,
             "ask": EXIT_ASK}[result["decision"]]

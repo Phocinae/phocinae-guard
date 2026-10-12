@@ -1,0 +1,64 @@
+# ---- Python bytecode / build caches ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ---- Packaging / build metadata ----
+*.egg-info/
+*.egg-link
+.eggs/
+build/
+*.egg
+
+# ---- Test & tool caches ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- Runtime / audit state ----
+# guard.py writes its JSONL audit log to ./phocinae-guard.audit.jsonl by default
+# (see guard.py audit_path). It records every command, cwd and verdict, so it
+# must never be committed.
+phocinae-guard.audit.jsonl
+.phocinae-guard.audit.jsonl
+audit.jsonl
+
+# Local (non-example) guard configuration may contain machine-specific paths.
+guard.conf.json
+phocinae_guard.conf.json
+
+# ---- Release artifacts ----
+# NOTE: the wheel/sdist files currently committed under dist/ are intentionally
+# shipped release artifacts for this repo (see git history, e.g.
+# "release: phocinae-guard 0.1.2 metadata sync (...; dist artifacts 0.1.2)").
+# They are therefore NOT ignored. Uncomment the line below only if that policy
+# changes.
+# dist/
+
+# ---- Editor / OS junk ----
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

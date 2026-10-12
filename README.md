@@ -1,4 +1,18 @@
-# phocinae-guard · L0 内核
+<img src="docs/assets/logo_phocinae.png" width="150" alt="斑海豹 Phocinae logo">
+
+# phocinae-guard
+
+命令审批门：**L0 离线确定性表**先定夺，灰区才问模型，全路径 **fail-closed**。给 AI harness 的每条 shell 命令加一道本地闸门。
+
+<p>
+  <img alt="PyPI" src="https://img.shields.io/static/v1?label=PyPI&message=phocinae-guard&color=blue&style=flat-square">
+  <img alt="Python" src="https://img.shields.io/static/v1?label=Python&message=3.9%2B&color=3776AB&style=flat-square">
+  <img alt="patterns" src="https://img.shields.io/static/v1?label=L0%20patterns&message=26&color=critical&style=flat-square">
+  <img alt="License" src="https://img.shields.io/static/v1?label=License&message=Apache-2.0&color=blue&style=flat-square">
+</p>
+
+<img src="docs/assets/guard_gate.png" width="880" alt="guard 真实裁决输出">
+<p><sub>▲ 真实裁决：白名单放行、黑名单拦截，**分隔符后的第二段同样要过黑名单**</sub></p>
 
 **斑海豹（phocinae）命令行审批门 L0 内核**：一条 shell 命令进来，判定出去
 （`allow` / `deny` / `ask` + exit code）。面向 Claude Code / Cline / Codex CLI /
@@ -217,6 +231,12 @@ L0 表自定义：JSON 的 `whitelist`/`whitelist_prefix`/`blacklist` 三节各�
 `blacklist` 条目形如 `[名称, 正则, 说明]`。
 
 ## 测试与验收
+
+<img src="docs/assets/S05_replay_battery.gif" width="720" alt="S05 演示动画">
+<p><sub>▲ **合成演示动画**（模型仓 docs/gallery [S05](https://huggingface.co/Phocinae/Phocinae-Largha-150M-v1/blob/main/docs/gallery)）：画面为逐帧渲染、场景数据虚构，但它演示的 **「回放一批命令、逐条看三态判定」的审计流程** 与真实实现一致（本页上方的终端截图即真实运行的同一流程）。</sub></p>
+
+<img src="docs/assets/guard_battery.png" width="880" alt="回放审计电池真实运行">
+<p><sub>▲ `python test_guard.py`：良性命令不得误拒、危险命令不得误放</sub></p>
 
 ```bash
 python3 mock_server.py --port 8155 --rules mock_rules.json &   # 本地 mock

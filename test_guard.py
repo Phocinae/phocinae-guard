@@ -89,7 +89,8 @@ def run_guard(cmd, server, env_extra=None, extra=None, stdin_mode=False):
     args += (extra or [])
     proc = subprocess.run(args, capture_output=True, text=True,
                           input=(cmd + "\n") if stdin_mode else None,
-                          env=env, timeout=30)
+                          env=env, timeout=30,
+                          encoding="utf-8", errors="replace")
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -118,7 +119,8 @@ def _url(srv):
 class TestBattery(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        rules = json.load(open(RULES_FILE, encoding="utf-8"))
+        with open(RULES_FILE, encoding="utf-8") as fh:
+            rules = json.load(fh)
         cls.servers = {"main": _start_server(rules=rules)}
         for name, pair in {
             "allow": (0.9, 1.0),
