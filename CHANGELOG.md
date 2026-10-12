@@ -4,6 +4,20 @@ All notable changes to `phocinae-guard` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.7 — 2026-10-12
+
+- **修正 0.1.6 里两个版本号不一致的问题。** 已发布的 0.1.6 中
+  `phocinae_guard/guard.py` 的 `VERSION` 仍是 `0.1.5`，而 `__init__.__version__` 是
+  `0.1.6`。原因是本仓有**五个**版本位点，而 `guard.py` 用的常量名是 `VERSION`
+  而不是 `__version__`，升版本时漏了它。
+
+  仓库里的插件自测**本来就断言**"plugin.json 的 version 必须等于 guard.py 的 VERSION"，
+  它也确实在 CI 上把这次错误拦了下来 —— 但**我在它通过之前就把 wheel 传上了 PyPI**。
+  顺序应当是：先跑完验证，再发布。0.1.6 会留在 PyPI 上（不可覆盖），0.1.7 是修正版。
+
+- 0.1.6 的文档修正（L0 表条数、自测命令、目录树）在本版中一并保留。
+
+
 ## 0.1.6 — 2026-10-12
 
 - **修正 README 里的 L0 表条数**：原写"24 条黑名单正则"，而 `l0_table.json` 实际是
