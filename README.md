@@ -72,23 +72,32 @@ Crush / dsh / Gemini CLI / Qwen Code / Kimi Code / OpenHands / Hermes 的 hook /
 
 ```
 phocinae-guard/
-├── guard.py               # 单文件审批门（纯标准库）
-├── l0_table.json          # L0 确定性表（白名单+黑名单正则）
-├── guard.conf.example.json# 配置文件示例
-├── mock_server.py         # 本地测试 mock（POST /v1/systemone 固定 noul/score）
-├── mock_rules.json        # mock 按命令区分的规则（灰带命令用）
-├── test_guard.py          # 验收测试（replay battery + 全链路）
-├── .claude-plugin/        # Claude Code 插件（本地成品；市场提交为后续迭代）
-│   ├── plugin.json        # 插件 manifest（name/version/description/author/hooks 声明）
-│   ├── hooks/
-│   │   ├── hooks.json     # PreToolUse(Bash) command 型 hook 配置
-│   │   └── guard_hook.py  # hook 本体：Claude Code JSON 协议 ↔ guard.py 裁决
-│   ├── skills/
-│   │   └── phocinae-guard/SKILL.md  # 「审批门」技能说明（应对守则+自查清单）
-│   └── scripts/
-│       └── self_test.sh   # 插件自测（hook 链路 + exit code 断言）
+├── guard.py                    # 单文件审批门（纯标准库）
+├── l0_table.json               # L0 确定性表（白名单+黑名单正则）
+├── guard.conf.example.json     # 配置文件示例
+├── mock_server.py              # 本地测试 mock（POST /v1/systemone 固定 noul/score）
+├── mock_rules.json             # mock 按命令区分的规则（灰带命令用）
+├── test_guard.py               # 验收测试（replay battery + 全链路）
+├── pyproject.toml              # 打包配置（console_script: phocinae-guard）
+├── .claude-plugin/
+│   └── plugin.json             # 插件 manifest（name/version/description/author）
+├── hooks/
+│   ├── hooks.json              # PreToolUse(Bash) command 型 hook 配置
+│   └── guard_hook.py           # hook 本体：Claude Code JSON 协议 ↔ guard.py 裁决
+├── skills/
+│   └── phocinae-guard/SKILL.md # 「审批门」技能说明（应对守则+自查清单）
+├── phocinae_guard/             # 可安装包（guard.py + l0_table.json 的副本）
+├── tests/
+│   ├── cc_plugin_self_test.sh  # 插件自测（hook 链路 + exit code 断言）
+│   ├── fuzz_robustness.py      # 模糊输入稳健性
+│   └── test_bypass_regression.py # 绕过回归（`ls\nrm -rf /` 这类）
+├── tools/
+│   └── verify_wheel_contents.py # 发布前检查 wheel 内容
+├── docs/
+│   ├── THRESHOLDS.md           # 阈值说明
+│   └── assets/                 # README 配图
 ├── README.md
-└── LICENSE                # Apache-2.0
+└── LICENSE                     # Apache-2.0
 ```
 
 ## 安装
@@ -192,7 +201,7 @@ claude --plugin-dir ./phocinae-guard
 ### 自测
 
 ```bash
-bash tests/cc_plugin_self_test.sh/self_test.sh
+bash tests/cc_plugin_self_test.sh
 ```
 
 纯本地、纯 CPU（不起真实模型服务）：两份 JSON 可解析+结构断言 → 服务地址对齐
