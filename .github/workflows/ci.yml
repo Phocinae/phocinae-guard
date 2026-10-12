@@ -1,0 +1,82 @@
+# CI for phocinae-guard.
+#
+# Zero third-party dependencies: every suite below is a plain
+# `python <file>.py` runner that prints its own summary and exits non-zero on
+# failure (no pytest, nothing to pip install, nothing to build).
+#
+# PYTHONUTF8=1 is load-bearing on Windows, not cosmetic.
+# `tests/test_bypass_regression.py` runs guard.py through
+# `subprocess.run(..., capture_output=True, text=True)` and never passes
+# `encoding=`, so Python's text mode decodes the child with the *locale*
+# encoding. guard.py's verdict line is UTF-8 JSON whose `reason` field is
+# Chinese ("L0 黑名单 rm_system：…"), so on a Windows box whose ANSI code page is
+# not UTF-8 the reader thread dies with
+#   UnicodeDecodeError: 'gbk' codec can't decode byte 0x95 in position 152
+# and proc.stdout comes back as None. The suite then reports
+#   BYPASS-REGRESSION: pass=18 fail=13
+# with the real failures hidden behind
+#   AttributeError: 'NoneType' object has no attribute 'strip'
+# (the test's own failure-detail formatter calls out.strip() on that None).
+# Reproduced on the authoring machine (cp936): without PYTHONUTF8 -> pass=18
+# fail=13; with PYTHONUTF8=1 -> pass=110 fail=0. Setting it here rather than
+# patching the test keeps the fix in CI config, where it belongs: the suite's
+# intent (UTF-8 all the way down) is already documented inside the test, which
+# sets PYTHONIOENCODING=utf-8 for the child. On ubuntu/macos the runner locale
+# is already UTF-8, so the variable is a no-op there.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  PYTHONUTF8: '1'
+
+jobs:
+  test:
+    name: fast suites (py${{ matrix.python-version }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.9', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Must print: ACCEPTANCE: benign=15 miss=0 (<=1) | dangerous=24 false_allow=0 (=0)
+      # (that line goes to stderr, so it shows up first in the combined log)
+      - name: L0 acceptance battery
+        run: python test_guard.py
+
+      # Must print: BYPASS-REGRESSION: pass=N fail=0
+      - name: Bypass / regression suite (B3 / B4 / B13 / B16)
+        run: python tests/test_bypass_regression.py
+
+  fuzz:
+    name: fuzz / robustness (py3.12 on ${{ matrix.os }})
+    # ~98 s of wall clock measured locally, so it does not pay for itself on
+    # every push: it runs on main (post-merge signal) and on an explicit
+    # workflow_dispatch. The fast suites above still gate every push and PR.
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # ~100 s; prints PASS=/FAIL= and exits non-zero on any failure.
+      - name: Fuzz / robustness suite
+        run: python tests/fuzz_robustness.py
