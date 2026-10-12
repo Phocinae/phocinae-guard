@@ -163,7 +163,7 @@ claude-community 市场提交为后续迭代。**
 
 - `.claude-plugin/plugin.json`：manifest（name/version/description/author +
   `hooks`/`skills` 组件声明，Apache-2.0）；
-- `.claude-plugin/hooks/hooks.json`：`PreToolUse` → matcher `Bash` → command 型
+- `hooks/hooks.json`：`PreToolUse` → matcher `Bash` → command 型
   hook `python3 "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hooks/guard_hook.py"`
   （timeout 30s，远低于默认 60s 上限）；
 - `.claude-plugin/hooks/guard_hook.py`：协议适配器（纯标准库）——stdin 收
@@ -175,7 +175,7 @@ claude-community 市场提交为后续迭代。**
   guard.py 内置默认 `http://127.0.0.1:8155`；阈值/fail-closed/L1 开关/审计路径
   等经环境变量透传（见「配置」节）。审计默认落 `~/.phocinae-guard/audit.jsonl`
   （避免散落到各项目目录），`PHOCINAE_GUARD_AUDIT=off` 禁用；
-- `.claude-plugin/skills/phocinae-guard/SKILL.md`：教 Claude 理解裁决、被 deny 后
+- `skills/phocinae-guard/SKILL.md`：教 Claude 理解裁决、被 deny 后
   改方案而非原样重试、危险命令自查清单。
 
 ### 安装
@@ -192,7 +192,7 @@ claude --plugin-dir ./phocinae-guard
 ### 自测
 
 ```bash
-bash .claude-plugin/scripts/self_test.sh
+bash tests/cc_plugin_self_test.sh/self_test.sh
 ```
 
 纯本地、纯 CPU（不起真实模型服务）：两份 JSON 可解析+结构断言 → 服务地址对齐

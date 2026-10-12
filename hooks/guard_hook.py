@@ -32,11 +32,37 @@ import sys
 HOOK_EVENT = "PreToolUse"
 GUARD_TIMEOUT_S = 15.0  # guard 内部 L1 超时默认 2s；留足余量且远低于 hook 超时 30s
 
+def _force_utf8_streams():
+    """把标准流固定为 UTF-8 + LF。
+
+    hook 的 stdout 是 Claude Code 的协议通道，必须是 UTF-8。文本模式 stdout
+    用 locale 编码（Windows 上常是 cp936），中文 permissionDecisionReason
+    会被编成 GBK，客户端严格 UTF-8 解码即失败。
+    """
+    for stream in (sys.stdout, sys.stderr, sys.stdin):
+        try:
+            stream.reconfigure(encoding="utf-8", newline="\n")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
+def _write_stdout_utf8(text):
+    """以 UTF-8 字节写 stdout；没有 .buffer 时退回 os.write(1, ...)。"""
+    data = text.encode("utf-8")
+    buf = getattr(sys.stdout, "buffer", None)
+    if buf is not None:
+        buf.write(data)
+        buf.flush()
+    else:  # pragma: no cover
+        import os
+        os.write(1, data)
+
+
 
 def _plugin_root():
-    # <plugin-root>/.claude-plugin/hooks/guard_hook.py → <plugin-root>
-    return os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__))))
+    # <plugin-root>/hooks/guard_hook.py → <plugin-root>
+    # （官方插件形态把 hooks/ 放在插件根，不在 .claude-plugin/ 里面）
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _guard_py():
@@ -61,16 +87,21 @@ def _run_guard(command, cwd):
 
 
 def _emit(decision, reason):
-    print(json.dumps({
+    # 以 UTF-8 字节写 stdout，而不是 print()：文本模式 stdout 用 locale 编码，
+    # 中文 reason 会被编成 GBK（Windows cp936），而 Claude Code 按 UTF-8 读
+    # hook 的 stdout —— 实测会在 position 134 抛 UnicodeDecodeError，
+    # 于是整条裁决作废，上游把「输出不可解析」当非阻断错误 → 危险命令可能被放行。
+    _write_stdout_utf8(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": HOOK_EVENT,
             "permissionDecision": decision,
             "permissionDecisionReason": "phocinae-guard: " + reason,
         },
-    }, ensure_ascii=False))
+    }, ensure_ascii=False) + "\n")
 
 
 def main():
+    _force_utf8_streams()
     raw = sys.stdin.read()
     if not raw.strip():
         return 0  # 空输入：无裁决，正常权限流

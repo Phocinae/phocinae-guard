@@ -11,15 +11,31 @@
 #      8155 被真实服务占用/绑定失败 → 该节 SKIP（不算失败）；
 #   5) 审计 JSONL 落盘校验。
 #
-# 用法：bash .claude-plugin/scripts/self_test.sh（退出码 0 = 全绿）
+# 用法：bash tests/cc_plugin_self_test.sh（退出码 0 = 全绿）
 set -u
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 解释器探测：Windows 上没有 python3（Git bash 里也没有）。
+# 优先 $PHOCINAE_CC_PY，否则依次试 $PY / python / py -3。
+if [ -n "${PHOCINAE_CC_PY:-}" ]; then
+    PY="$PHOCINAE_CC_PY"
+else
+    PY=""
+    for cand in python3 python; do
+        if command -v "$cand" >/dev/null 2>&1; then PY="$cand"; break; fi
+    done
+    if [ -z "$PY" ] && command -v py >/dev/null 2>&1; then PY="py -3"; fi
+fi
+if [ -z "$PY" ]; then
+    echo "无法找到 Python 解释器；设 PHOCINAE_CC_PY=/path/to/python 后重试" >&2
+    exit 2
+fi
+echo "interpreter: $PY"
+
 PLUGIN_JSON="$ROOT/.claude-plugin/plugin.json"
-HOOKS_JSON="$ROOT/.claude-plugin/hooks/hooks.json"
-HOOK="$ROOT/.claude-plugin/hooks/guard_hook.py"
+HOOKS_JSON="$ROOT/hooks/hooks.json"
+HOOK="$ROOT/hooks/guard_hook.py"
 GUARD="$ROOT/guard.py"
-PY="${PYTHON:-python3}"
 
 TMP="$(mktemp -d)"
 export PHOCINAE_GUARD_AUDIT="$TMP/audit.jsonl"
@@ -56,15 +72,28 @@ else
   bad "hooks.json 解析失败"
 fi
 
-if "$PY" - "$PLUGIN_JSON" <<'PYEOF'
-import json, sys
+if "$PY" - "$PLUGIN_JSON" "$ROOT/guard.py" <<'PYEOF'
+import json, re, sys
 p = json.load(open(sys.argv[1], encoding="utf-8"))
+guard_src = open(sys.argv[2], encoding="utf-8").read()
+guard_version = re.search(r'^VERSION\s*=\s*"([^"]+)"', guard_src, re.M).group(1)
 assert p["name"] == "phocinae-guard", "name 不符"
-assert p["version"] == "0.1.0", "version 不符"
+# 版本号必须与 guard.py 的 VERSION 一致：写死字面量会在每次发布后失效，
+# 而那属于测试漂移，不是插件缺陷。这里断言两者不漂移。
+assert p["version"] == guard_version, (
+    "version 不符：plugin.json=%r guard.py=%r" % (p["version"], guard_version))
+assert re.match(r"^\d+\.\d+\.\d+", p["version"]), "version 不是 x.y.z"
 assert p["license"] == "Apache-2.0", "license 不符"
 assert isinstance(p.get("author"), dict) and p["author"].get("name"), "author 缺失"
+# author 必须是本项目，不能是别的组织（曾误写成 "Nous Research"）
+assert "phocinae" in p["author"]["name"].lower(), "author 不是 Phocinae"
 assert p.get("hooks", "").endswith("hooks.json"), "hooks 组件声明缺失"
+# hooks.json 必须位于插件根的 hooks/ 下（官方插件形态），
+# 不在 .claude-plugin/ 里 —— 后者市场装载找不到
+assert p["hooks"] == "./hooks/hooks.json", (
+    "hooks 路径不符合官方形态：%r" % p["hooks"])
 assert p.get("skills", "").startswith("./"), "skills 组件声明缺失"
+assert p["skills"] == "./skills", "skills 路径不符合官方形态：%r" % p["skills"]
 print("ok")
 PYEOF
 then

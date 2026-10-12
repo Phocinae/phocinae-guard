@@ -1,10 +1,12 @@
 {
   "name": "phocinae-guard",
-  "version": "0.1.0",
-  "description": "斑海豹命令审批门：PreToolUse(Bash) 拦截每一次 shell 命令，L0 确定性表 + 可选 L1 模型裁决，输出 allow/deny/ask（fail-closed，宁严勿松）。本次为本地成品，不发布。",
+  "version": "0.1.3",
+  "description": "斑海豹命令审批门：PreToolUse(Bash) 拦截每一次 shell 命令，L0 确定性表先定夺、灰区才交本地模型，输出 allow/deny/ask。deny 优先、fail-closed、全程本机无外联。",
   "author": {
-    "name": "Nous Research (phocinae-guard)"
+    "name": "Phocinae"
   },
+  "homepage": "https://github.com/Phocinae/phocinae-guard",
+  "repository": "https://github.com/Phocinae/phocinae-guard",
   "license": "Apache-2.0",
   "keywords": [
     "security",
@@ -14,7 +16,6 @@
     "bash",
     "phocinae"
   ],
-  "defaultEnabled": true,
-  "hooks": "./.claude-plugin/hooks/hooks.json",
-  "skills": "./.claude-plugin/skills"
+  "hooks": "./hooks/hooks.json",
+  "skills": "./skills"
 }
