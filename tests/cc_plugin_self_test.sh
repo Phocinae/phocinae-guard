@@ -102,23 +102,67 @@ else
   bad "plugin.json 结构断言失败"
 fi
 
-if "$PY" - "$HOOKS_JSON" <<'PYEOF'
-import json, sys
+if "$PY" - "$HOOKS_JSON" "$ROOT" <<'PYEOF'
+import json, os, sys
 h = json.load(open(sys.argv[1], encoding="utf-8"))
+root = sys.argv[2]
 pre = h["hooks"]["PreToolUse"]
 assert len(pre) == 1, "PreToolUse 应恰好 1 组"
 g = pre[0]
-assert g.get("matcher") == "Bash", "matcher 应为 Bash"
+matcher = g.get("matcher") or ""
+# matcher 必须覆盖 shell 与文件写入两族。
+# 只写 "Bash" 时，Write/Edit/MCP 工具根本不经过本 hook —— 门形同不存在，
+# 而它「没报错」这一点会让所有别的检查继续全绿。
+for token in ("Bash", "Write", "Edit", "mcp__"):
+    assert token in matcher, "matcher 未覆盖 %s：%r" % (token, matcher)
 assert len(g["hooks"]) == 1 and g["hooks"][0]["type"] == "command", "应 command 型"
 cmd = g["hooks"][0]["command"]
 assert "guard_hook.py" in cmd, "command 应指向 guard_hook.py"
 assert "${CLAUDE_PLUGIN_ROOT}" in cmd, "command 应使用 ${CLAUDE_PLUGIN_ROOT}"
+
+# ★ 关键断言：把 ${CLAUDE_PLUGIN_ROOT} 展开，**断言那个文件真的存在**。
+#
+# 这一条以前是缺的，而缺它的代价是实测过的：command 曾写成
+#   ${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hooks/guard_hook.py
+# 而 .claude-plugin/ 下只有 plugin.json，真实文件在 hooks/guard_hook.py。
+# 旧断言只 `"guard_hook.py" in cmd`（子串）＋含 ${CLAUDE_PLUGIN_ROOT}，
+# 两条都能被错误路径满足，于是自测 16/16 全绿，而插件装上去每次 Bash 调用
+# 都 spawn 失败 —— Claude Code 把 hook 启动失败当**非阻断错误**，结果是静默放行。
+resolved = cmd.replace("${CLAUDE_PLUGIN_ROOT}", root).replace("$CLAUDE_PLUGIN_ROOT", root)
+# 去掉 python 解释器与引号，取出脚本路径
+import shlex
+parts = shlex.split(resolved)
+script = parts[-1]
+assert os.path.isfile(script), (
+    "hook command 指向的文件不存在：%r（command=%r，展开后=%r）"
+    % (script, cmd, resolved))
+print("resolved hook script: %s" % script)
 print("ok")
 PYEOF
 then
-  ok "hooks.json 结构断言（PreToolUse/Bash/command 型/CLAUDE_PLUGIN_ROOT）"
+  ok "hooks.json command 展开后指向真实文件（含 matcher 覆盖 shell+写入）"
 else
-  bad "hooks.json 结构断言失败"
+  bad "hooks.json command 展开后文件不存在，或 matcher 覆盖不足"
+fi
+
+# 反向验证：把 command 改回那个不存在的路径，上面的解析必须失败。
+# 没有这一步，就无法证明那条断言真的在检查它声称检查的东西。
+if "$PY" - "$ROOT" <<'PYEOF'
+import json, os, shlex, sys
+root = sys.argv[1]
+broken = 'python3 "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hooks/guard_hook.py"'
+resolved = broken.replace("${CLAUDE_PLUGIN_ROOT}", root)
+script = shlex.split(resolved)[-1]
+# 期望：文件不存在（即旧路径确实是坏的）
+if os.path.isfile(script):
+    print("unexpected: %r exists" % script)
+    sys.exit(1)
+sys.exit(0)
+PYEOF
+then
+  ok "反向验证：旧的 .claude-plugin/hooks/ 路径确实不存在（断言非空转）"
+else
+  bad "反向验证失败：旧路径居然存在，说明本项断言指向了别的东西"
 fi
 
 # ------------------------------------------- 2) 服务地址对齐（默认 127.0.0.1:8155）

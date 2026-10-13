@@ -38,7 +38,7 @@ import sys
 import urllib.error
 import urllib.request
 
-VERSION = "0.1.7"
+VERSION = "0.1.8"
 
 EXIT_ALLOW = 0
 EXIT_DENY = 1
@@ -253,6 +253,232 @@ def _flag(obj, key):
     return obj.get(key) is True
 
 
+# ----------------------------------------------------------- L0 黑名单的替代改法
+# A deny that only says "no" leaves the caller stuck, and the natural next move is
+# to retry the same command with cosmetic changes. Each entry below names the
+# concrete replacement instead.
+#
+# INVARIANT, asserted by tests/cc_plugin_self_test.sh and tests/test_remediation.py:
+#   every built-in blacklist entry has a hint, every hint has at least one
+#   `instead` command, and **no `instead` command trips the blacklist itself**.
+# The last clause is the one that matters: a remediation that is itself dangerous
+# would turn this table into a way around the gate.
+DEFAULT_REMEDIATION = {
+    "rm_system": {
+        "why": "Deleting a root, home or system path is not recoverable by re-running anything.",
+        "instead": [
+            "ls -la <path>                      # look first",
+            "trash-put <path>                   # move to trash, recoverable",
+            "mv <path> <path>.bak               # rename instead of delete",
+        ],
+        "note": "If you only need to see what would go, use `find <path> -print` — it lists without deleting.",
+    },
+    "rm_dot": {
+        "why": "`rm -rf .` empties the current directory; `.` and `..` are almost never what was meant.",
+        "instead": [
+            "ls -la                             # confirm where you are",
+            "rm -rf ./build ./dist              # name the targets explicitly",
+            "trash-put ./build                  # recoverable",
+        ],
+    },
+    "sudo_destructive": {
+        "why": "Elevation plus a destructive verb removes the last line of defence.",
+        "instead": [
+            "sudo -l                            # what is actually permitted",
+            "sudo systemctl restart <unit>      # a specific, reversible action",
+            "sudo <cmd> --dry-run               # if the tool supports it",
+        ],
+        "note": "Ask a human before any elevated destructive action; that is what the ask verdict is for.",
+    },
+    "pipe_to_sh": {
+        "why": "Piping into a shell executes whatever arrives, including after a redirect.",
+        "instead": [
+            "curl -fsSL <url> -o /tmp/x.sh && less /tmp/x.sh   # read it first",
+            "curl -fsSL <url> -o /tmp/x.sh && sha256sum /tmp/x.sh",
+            "curl -fsSL <url> -o /tmp/x.sh && bash /tmp/x.sh   # then run the file you read",
+        ],
+    },
+    "curl_pipe_sh": {
+        "why": "Download-and-execute gives the remote end control of this machine.",
+        "instead": [
+            "curl -fsSL <url> -o /tmp/install.sh && less /tmp/install.sh",
+            "curl -fsSL <url> -o /tmp/install.sh && sha256sum /tmp/install.sh",
+            "pipx install <package>             # a package manager instead of a pipe",
+        ],
+    },
+    "git_force_push": {
+        "why": "A force push rewrites published history; other clones cannot fast-forward afterwards.",
+        "instead": [
+            "git push --force-with-lease         # refuses if someone else pushed",
+            "git push --force-with-lease --dry-run",
+            "git revert <sha> && git push        # forward-fix instead of rewrite",
+        ],
+        "note": "`--force-with-lease` is deliberately *not* on the block list; it goes to review instead.",
+    },
+    "git_push_delete": {
+        "why": "Deleting a remote branch can discard commits that exist nowhere else.",
+        "instead": [
+            "git ls-remote --heads origin          # what the remote actually has",
+            "git log origin/<branch> --not main   # what would be lost",
+            "git branch <branch>-archive origin/<branch>   # keep a local copy first",
+        ],
+    },
+    "find_root_delete": {
+        "why": "`find / -delete` walks the whole filesystem and removes matches.",
+        "instead": [
+            "find <path> -maxdepth 3 -name '<pattern>' -print   # bounded list, no deletion",
+            "find <path> -name '<pattern>' -print              # list the full scope",
+            "du -sh <path>                                     # how much is involved",
+        ],
+    },
+    "find_system_delete": {
+        "why": "Deleting under a system path while walking it can remove live configuration.",
+        "instead": [
+            "find <system-path> -name '<pattern>' -print   # list, do not delete",
+            "ls -la <system-path>                          # inspect the directory",
+            "du -sh <system-path>                          # how much is there",
+        ],
+    },
+    "find_exec_rm": {
+        "why": "`find -exec rm` deletes inside a walk whose scope is easy to misjudge.",
+        "instead": [
+            "find <path> <cond> -print       # see the full scope first",
+            "find <path> <cond> -ls          # size and timestamps per match",
+            "du -sh <path>                   # how much is involved",
+        ],
+    },
+    "xargs_rm": {
+        "why": "`xargs rm` deletes whatever the left side produces, including nothing or too much.",
+        "instead": [
+            "<producer> | xargs -r echo      # echo the arguments first",
+            "<producer> | wc -l              # how many targets",
+            "<producer> | xargs -r ls -la    # inspect what matched",
+        ],
+    },
+    "dd_write_dev": {
+        "why": "Writing to a block device destroys the filesystem on it; the wrong device is one character away.",
+        "instead": [
+            "lsblk -f                                # confirm the device and its contents",
+            "dd if=<image> of=/dev/<dev> status=progress --dry-run   # where supported",
+            "dd if=<image> of=/tmp/out.img bs=4M status=progress     # write to a file first",
+        ],
+    },
+    "mkfs": {
+        "why": "Formatting erases the target device's contents.",
+        "instead": [
+            "lsblk -f                        # device, filesystem, label",
+            "blkid                           # which filesystems exist right now",
+            "cat /proc/partitions            # the kernel's view of the block devices",
+        ],
+        "note": "`wipefs` is blocked by name even with `-n`: a gate that does not parse flags cannot tell a dry run from the real thing.",
+    },
+    "chmod777": {
+        "why": "World-writable bits on a tree let any local process modify it.",
+        "instead": [
+            "chmod -R u=rwX,go=rX <path>             # owner writes, others read",
+            "chmod -R g+w <path>                     # group write where needed",
+            "stat -c '%a %n' <path>                  # inspect before changing",
+        ],
+    },
+    "chown_system": {
+        "why": "Changing ownership of system paths can break services and login.",
+        "instead": [
+            "ls -ld <path>                           # current owner and mode",
+            "chown -R --from=<old>:<old> <new>:<new> <path>   # only what still has the old owner",
+            "chown <user>:<group> <single-file>      # start from one file",
+        ],
+    },
+    "fork_bomb": {
+        "why": "A fork bomb exhausts the process table; recovery usually needs a reboot.",
+        "instead": [
+            "ulimit -u                               # see the process limit",
+            "timeout 5 <command>                     # bound anything recursive",
+            "echo '<recursive-command>'              # inspect the text instead of running it",
+        ],
+    },
+    "fork_bomb_win": {
+        "why": "The cmd.exe fork bomb spawns shells until the machine stops responding.",
+        "instead": [
+            "Get-Process | Measure-Object            # current process count",
+            "Start-Process <exe> -Wait               # one bounded child",
+            "Get-Content .\\script.ps1               # read before running",
+        ],
+    },
+    "shutdown": {
+        "why": "Halting or rebooting interrupts everything running on the host, including other people's work.",
+        "instead": [
+            "who                             # who else is on this host",
+            "systemctl list-jobs             # what a restart would interrupt",
+            "uptime                          # how long it has been up",
+        ],
+    },
+    "crontab_r": {
+        "why": "`crontab -r` deletes the whole schedule with no confirmation and no undo.",
+        "instead": [
+            "crontab -l > ~/crontab-$(date +%F).bak  # back it up first",
+            "crontab -l                              # read it",
+            "crontab -e                              # edit the one line you meant",
+        ],
+    },
+    "write_redirect_system": {
+        "why": "A redirect truncates the target before anything is written.",
+        "instead": [
+            "cat <file>                              # read the target first",
+            "cp <file> <file>.bak && cat > <file>    # keep a copy",
+            "sudo tee -a <file>                      # append rather than truncate",
+        ],
+    },
+    "outfile_system": {
+        "why": "Writing tool output into a system path can overwrite configuration.",
+        "instead": [
+            "<cmd> -o /tmp/out.<ext>                 # write somewhere disposable",
+            "<cmd> -o ./out.<ext>                    # or into the project",
+            "ls -la <system-path>                    # inspect before writing there",
+        ],
+    },
+    "exfil_stdin": {
+        "why": "Sending stdin to a remote host can ship a private key or a credential file off the machine.",
+        "instead": [
+            "wc -c < <file>                          # how much would leave",
+            "sha256sum <file>                        # prove content without moving it",
+            "cat <file> | gpg -c > /tmp/x.gpg        # encrypt before any transfer",
+        ],
+    },
+    "eval_curl": {
+        "why": "`eval $(curl ...)` runs whatever the remote returns, in this shell.",
+        "instead": [
+            "curl -fsSL <url> -o /tmp/x.sh && cat /tmp/x.sh   # read it",
+            "curl -fsSL <url> -o /tmp/x.sh && bash -n /tmp/x.sh   # syntax-check it",
+            "curl -fsSL <url> -o /tmp/x.sh && bash /tmp/x.sh",
+        ],
+    },
+    "source_curl": {
+        "why": "`source <(curl ...)` executes the remote response inside the current shell, with its environment.",
+        "instead": [
+            "curl -fsSL <url> -o /tmp/x.sh && cat /tmp/x.sh",
+            "curl -fsSL <url> -o /tmp/x.sh && bash /tmp/x.sh   # a child shell, not this one",
+            "curl -fsSL <url> -o /tmp/x.sh && diff /tmp/x.sh <expected>",
+        ],
+    },
+    "sh_c_curl": {
+        "why": "`sh -c 'curl ...'` hides the download-and-execute one level deeper.",
+        "instead": [
+            "curl -fsSL <url> -o /tmp/x.sh && cat /tmp/x.sh",
+            "curl -fsSL <url> -o /tmp/x.sh && sha256sum /tmp/x.sh",
+            "curl -fsSL <url> -o /tmp/x.sh && bash /tmp/x.sh",
+        ],
+    },
+    "mv_system": {
+        "why": "Moving into a system path can displace files a service depends on.",
+        "instead": [
+            "ls -la <system-path>                    # what is already there",
+            "mv <src> /tmp/                         # stage outside the system tree",
+            "install -m 0644 <src> <system-path>/<name>   # explicit name and mode",
+        ],
+    },
+}
+
+
 def load_l0_table(path):
     """加载 L0 表（JSON）。缺文件 → 内置默认表。
 
@@ -270,6 +496,13 @@ def load_l0_table(path):
         "whitelist": set(DEFAULT_L0["whitelist"]),
         "whitelist_prefix": list(DEFAULT_L0["whitelist_prefix"]),
         "blacklist": [list(x) for x in DEFAULT_L0["blacklist"]],
+        # name -> {"why": ..., "instead": [...], "note": ...}
+        #
+        # This is an *additive* top-level key, deliberately not a fourth element
+        # of each blacklist entry: two existing suites assert the entry shape is
+        # [name, regex, note], and widening it would silently change a documented
+        # protocol for every external table author.
+        "remediation": dict(DEFAULT_REMEDIATION),
     }
     if not path:
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -323,7 +556,31 @@ def load_l0_table(path):
                 # 追加，且不允许自定义条目把内置条目顶掉（保持内置拦截常在）
                 existing = set(entry[0] for entry in table["blacklist"])
                 table["blacklist"] += [e for e in entries if e[0] not in existing]
+    # Remediation hints merge by name; a custom table may add hints for its own
+    # entries and may override a built-in hint by reusing its name.
+    extra = data.get("remediation")
+    if isinstance(extra, dict):
+        for name, hint in extra.items():
+            table["remediation"][str(name)] = hint
     return table
+
+
+def remediation_for(table, name):
+    """The remediation hint for a blacklist entry, or None.
+
+    Returns a dict with an "instead" list of concrete replacement commands. The
+    point is that a deny should not be a dead end: the caller is told what to run
+    instead, in a form that can be copied.
+    """
+    if not name:
+        return None
+    hint = (table.get("remediation") or {}).get(name)
+    if not isinstance(hint, dict):
+        return None
+    instead = hint.get("instead")
+    if not isinstance(instead, list) or not instead:
+        return None
+    return hint
 
 
 # 转义换行（行继续）与行内字面 backslash-n：都不是命令分隔符。
@@ -503,20 +760,23 @@ def l0_judge(cmd, table):
       1) 黑名单同时对原串、归一化串、每一段（含去前导 `\\`）跑；
       2) 只有在黑名单全不中的前提下才看白名单；
       3) 白名单要求**每一段**都命中——第 1 段命中不能给第 2 段背书。
+
+    黑名单命中时，返回四元组，第 4 项是规则名，供调用方取替代改法
+    （remediation）；其余分支返回 (decision, reason, layer, None)。
     """
     segs = _split_command_segments(normalize(cmd))
     if not segs:
-        return "deny", "空命令", "L0"
+        return "deny", "空命令", "L0", None
     hit = _blacklist_hit(table, _blacklist_candidates(cmd, segs))
     if hit is not None:
         name, note, matched = hit
         return ("deny", "L0 黑名单 %s：%s（命中：%s）"
-                % (name, note, _snippet(matched)), "L0")
+                % (name, note, _snippet(matched)), "L0", name)
     for seg in segs:
         reason = _segment_hit(seg, table)
         if reason is None:
-            return None, "L0 不能定夺", "L0"
-    return "allow", "L0 白名单逐段命中（%s）" % segs[0], "L0"
+            return None, "L0 不能定夺", "L0", None
+    return "allow", "L0 白名单逐段命中（%s）" % segs[0], "L0", None
 
 # ------------------------------------------------------------------ L1：/v1/systemone 两问
 def systemone_ask(cfg, command, cwd):
@@ -596,7 +856,7 @@ def map_l1(noul_p, score, cfg):
 
 # ------------------------------------------------------------------ 决策编排
 def decide(command, cwd, cfg):
-    decision, reason, layer = l0_judge(command, cfg["l0_table_data"])
+    decision, reason, layer, rule_name = l0_judge(command, cfg["l0_table_data"])
     result = {
         "command": command,
         "cwd": cwd,
@@ -613,6 +873,18 @@ def decide(command, cwd, cfg):
         },
         "confirm": False,
     }
+    # A deny should not be a dead end. When the block came from a named L0 rule,
+    # attach the concrete alternatives so the caller can act instead of retrying
+    # the same command with cosmetic changes.
+    if decision == "deny" and rule_name:
+        hint = remediation_for(cfg["l0_table_data"], rule_name)
+        if hint:
+            result["remediation"] = {
+                "rule": rule_name,
+                "why": hint.get("why"),
+                "instead": list(hint.get("instead") or []),
+                "note": hint.get("note"),
+            }
     if decision is not None:
         return result
     # P0 口径：150M 权重未做过命令审批域校准（实测 L1 信号≈噪声），默认不启用；
@@ -671,12 +943,6 @@ def audit(cfg, result, strict=False):
         "confirm": bool(result.get("confirm")),
     }
     try:
-        # 父目录不存在时先建出来：审计写不进去等于没有审计，而「目录还没建」
-        # 是最常见的原因（例如 ~/.phocinae-guard/audit.jsonl 首次运行）。
-        # 建目录失败会落到下面的告警 / strict 分支，不静默。
-        parent = os.path.dirname(os.path.abspath(path))
-        if parent and not os.path.isdir(parent):
-            os.makedirs(parent, exist_ok=True)
         # newline=""：JSONL 每条记录固定以 \n 结尾，跨平台都能逐行解析
         with open(path, "a", encoding="utf-8", newline="") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")

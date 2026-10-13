@@ -77,6 +77,25 @@ jobs:
         shell: bash
         run: bash tests/cc_plugin_self_test.sh
 
+      # The write layer and the remediation table each have a failure mode that
+      # no other suite can see.
+      #
+      # The hook used to read only `tool_input.command`. Widening the matcher to
+      # Write/Edit/MCP without widening the hook would make every one of those
+      # calls take the "no command" branch and return *no decision*, which the
+      # host reads as "continue to the normal permission flow" -- the gate would
+      # silently not exist for exactly the tools it had just been extended to
+      # cover. This suite drives the real hook over stdin, so it tests the wiring.
+      - name: Write layer (hook judges Write/Edit/MultiEdit/MCP)
+        run: python tests/test_write_layer.py
+
+      # A table of "suggested alternatives" attached to a security gate has an
+      # obvious failure mode: if any suggested command is itself dangerous, the
+      # table becomes a documented way around the gate. R7 asserts that no
+      # `instead` command trips the blacklist.
+      - name: Remediation table (no suggested alternative trips the blacklist)
+        run: python tests/test_remediation.py
+
   fuzz:
     name: fuzz / robustness (py3.12 on ${{ matrix.os }})
     # ~98 s of wall clock measured locally, so it does not pay for itself on

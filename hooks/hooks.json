@@ -2,11 +2,11 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell|pwsh|Shell|Write|Edit|MultiEdit|NotebookEdit|mcp__.*",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hooks/guard_hook.py\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard_hook.py\"",
             "timeout": 30
           }
         ]

@@ -4,6 +4,106 @@ All notable changes to `phocinae-guard` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.8 — 2026-10-14
+
+### Fixed — **the hook pointed at a file that does not exist**
+
+`hooks/hooks.json` sent every Bash call to
+`${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hooks/guard_hook.py`, but `.claude-plugin/`
+contains only `plugin.json`; the hook has always lived at `hooks/guard_hook.py`.
+A Claude Code command hook that fails to start is a **non-blocking error**, so
+the gate would not have run and the call would have continued into the normal
+permission flow — a silent fail-open on the one path this plugin exists to guard.
+
+It survived every check the project had:
+
+| check | why it stayed green |
+|---|---|
+| `tests/cc_plugin_self_test.sh` | it hard-coded `$ROOT/hooks/guard_hook.py` and invoked *that* — the test used the correct path, so it could never see the wrong one |
+| that script's `hooks.json` assertions | substring tests (`"guard_hook.py" in cmd`, `${CLAUDE_PLUGIN_ROOT}` present) — a wrong path satisfies both |
+| `tools/audit_plugin_manifests.py` | checks `.mcp.json` argument paths, not Claude hook commands |
+| `audit_readme_trees_and_images` | reconciles the README tree against the repository, not paths inside `hooks.json` |
+| `claude plugin validate` | validates manifest structure, not whether the expanded path exists |
+
+The self-test now reads the command **out of `hooks.json`**, expands
+`${CLAUDE_PLUGIN_ROOT}`, and asserts the file exists — plus a reverse check that
+the old path really is absent, so the assertion cannot pass vacuously.
+
+### Added — the gate now covers file writes, not only shell commands
+
+`matcher` widened from `Bash` to
+`Bash|PowerShell|pwsh|Shell|Write|Edit|MultiEdit|NotebookEdit|mcp__.*`.
+
+Widening the matcher alone would have been worse than useless: the hook read only
+`tool_input.command`, so every `Write`/`Edit` call would have taken the "no
+command" branch and returned *no decision*, which the host reads as "continue to
+the normal permission flow". The gate would have silently not existed for exactly
+the tools it had just been extended to cover. So the hook gained a deterministic
+write layer:
+
+* **deny** — `.ssh/` material, cloud credential stores (`.aws/`, `.kube/config`,
+  `gcloud`): *irreplaceable identity*;
+* **ask** — credential files (`.env`, `.netrc`, `credentials.json`), CI configs,
+  shell startup files, system paths, `.git/config` and `.git/hooks/`, and
+  registry tokens (`.npmrc`, `.pypirc`, `.gem/credentials`): *revocable tokens
+  and ordinary-but-sensitive configuration*;
+* **no decision** — everything else, including any call whose path cannot be
+  read. This layer answers only for what it can see, and never blocks on
+  incomprehension.
+
+It judges **paths, not content**: content is what the user meant to write, and
+blocking on it misfires constantly. No model, no service — it works on install.
+
+MCP tools are judged by verb only (`delete`, `drop`, `destroy`, `revoke`, …) and
+go to `ask`, since their argument shapes are arbitrary.
+
+### Added — a deny now says what to run instead
+
+The L0 table has 26 blacklist rules and, until now, a deny was a dead end: the
+`reason` said what was blocked, not what to do. The obvious next move was to
+retry the same command with cosmetic changes.
+
+Every blacklist rule now carries a `remediation` hint — why it is risky, plus
+concrete copyable alternatives — attached as a new `remediation` field on the
+deny result, and never on an allow.
+
+The invariant is asserted rather than assumed: **no suggested alternative trips
+the blacklist.** The first draft failed it in nine places — it suggested
+`find … -print -delete`, `mv <x> /var/tmp/`, `xargs -r -p rm`, `mkfs.<t> -n`,
+`git push --delete --dry-run`, `wipefs -n` and `shutdown -c`, each of which the
+gate blocks. A remediation table that hands out blocked commands is a documented
+way around the gate, so those became genuinely read-only alternatives
+(`git ls-remote --heads`, `find … -print`, `du -sh`, `lsblk -f`, `blkid`,
+`systemctl list-jobs`).
+
+`wipefs` stays blocked even with `-n` — a gate that does not parse flags cannot
+tell a dry run from the real thing — and the hint now says so instead of
+suggesting it.
+
+The key is **additive**: `blacklist` entries stay `[name, regex, note]`, because
+two suites assert that shape and widening it would silently change a documented
+protocol for every external table author.
+
+### Fixed — the built-in whitelist had lost `python -m pytest`
+
+The packaged `phocinae_guard/guard.py` was missing `"python -m pytest"`, which
+0.1.3 added and this CHANGELOG still claims is present; the standalone `guard.py`
+at the repository root had it. Both copies now match, and
+`tests/test_remediation.py` R21 asserts the prefix entry is present so it cannot
+be lost silently again.
+
+### Tests
+
+| suite | result |
+|---|---|
+| `test_guard.py` | `benign=15 miss=0 (<=1) \| dangerous=24 false_allow=0 (=0)` |
+| `tests/test_bypass_regression.py` | `pass=110 fail=0` |
+| `tests/test_write_layer.py` (new) | `PASS=27 FAIL=0` |
+| `tests/test_remediation.py` (new) | `PASS=21 FAIL=0` |
+| `tests/cc_plugin_self_test.sh` | `PASS=17 FAIL=0` (was 16) |
+| `tests/fuzz_robustness.py` | `PASS=141 FAIL=0` |
+
+
 ## 0.1.7 — 2026-10-12
 
 - **修正 0.1.6 里两个版本号不一致的问题。** 已发布的 0.1.6 中

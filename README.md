@@ -82,7 +82,7 @@ phocinae-guard/
 ├── .claude-plugin/
 │   └── plugin.json             # 插件 manifest（name/version/description/author）
 ├── hooks/
-│   ├── hooks.json              # PreToolUse(Bash) command 型 hook 配置
+│   ├── hooks.json              # PreToolUse command 型 hook 配置（shell + 文件写入）
 │   └── guard_hook.py           # hook 本体：Claude Code JSON 协议 ↔ guard.py 裁决
 ├── skills/
 │   └── phocinae-guard/SKILL.md # 「审批门」技能说明（应对守则+自查清单）
@@ -151,7 +151,7 @@ esac
 **Claude Code PreToolUse hook**（`settings.json`）：
 
 ```json
-{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+{"hooks": {"PreToolUse": [{"matcher": "Bash|Write|Edit|MultiEdit|mcp__.*", "hooks": [
   {"type": "command",
    "command": "jq -r .tool_input.command | /opt/phocinae-guard/guard.py"}]}]}}
 ```
@@ -163,7 +163,7 @@ OpenHands / Hermes 用 PreToolUse 类 hook——凡是能「拦命令、看 exit
 
 ## Claude Code 插件（.claude-plugin/）
 
-本地成品形态：一个 Claude Code 插件目录——`PreToolUse(Bash)` 拦截每一次 shell
+本地成品形态：一个 Claude Code 插件目录——`PreToolUse` 拦截每一次 shell
 命令，交给 guard.py 裁决，再把结果翻译成 Claude Code hook JSON 协议
 （`permissionDecision: allow/deny/ask` + 可执行理由）。**本次仅本地成品，不发布；
 claude-community 市场提交为后续迭代。**
@@ -172,10 +172,10 @@ claude-community 市场提交为后续迭代。**
 
 - `.claude-plugin/plugin.json`：manifest（name/version/description/author +
   `hooks`/`skills` 组件声明，Apache-2.0）；
-- `hooks/hooks.json`：`PreToolUse` → matcher `Bash` → command 型
-  hook `python3 "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hooks/guard_hook.py"`
+- `hooks/hooks.json`：`PreToolUse` → matcher `Bash|PowerShell|pwsh|Shell|Write|Edit|MultiEdit|NotebookEdit|mcp__.*` → command 型
+  hook `python3 "${CLAUDE_PLUGIN_ROOT}/hooks/guard_hook.py"`
   （timeout 30s，远低于默认 60s 上限）；
-- `.claude-plugin/hooks/guard_hook.py`：协议适配器（纯标准库）——stdin 收
+- `hooks/guard_hook.py`：协议适配器（纯标准库）——stdin 收
   PreToolUse 事件 JSON，取 `tool_input.command` 调 guard.py，按 exit code 映射：
   `0/allow → hook exit 0 + allow`（跳过权限弹窗）、`1/deny → hook exit 2 + deny`、
   `2/ask → hook exit 2 + ask`（auto 模式下 ask 也强制弹窗）；guard.py 出错/超时 →
@@ -217,7 +217,20 @@ bash tests/cc_plugin_self_test.sh
   放宽为人工确认档；L1 模型经命令审批域校准后再开 `PHOCINAE_GUARD_L1_ENABLED=1`。
 - deny 在任何权限模式下都生效（含 bypass/yolo 模式），`--confirm` 也无法覆盖；
   被 deny 后 Claude 应依据理由改方案而不是重试同款。
-- 门只管 Bash 工具调用；Write/Edit/MCP 工具不受此 hook 约束（后续迭代可扩 matcher）。
+- **门覆盖两族工具**（0.1.8 起）：
+  - **shell 命令**（`Bash` / `PowerShell` / `pwsh` / `Shell`）→ 交 `guard.py` 裁决（L0 表 + 可选 L1）；
+  - **文件写入**（`Write` / `Edit` / `MultiEdit` / `NotebookEdit`）与 **MCP 工具**（`mcp__*`）
+    → 由 hook 内的**确定性写入层**裁决，不需要模型、不需要服务：
+    `deny` 覆盖 `.ssh/` 私钥与云凭据（不可替代的身份）；`ask` 覆盖凭据文件（`.env`/`.netrc`）、
+    CI 配置、shell 启动脚本、系统路径、`.git/config` 与 `.git/hooks/`、以及
+    `.npmrc`/`.pypirc`/`.gem/credentials` 这类可吊销的 registry token。
+    其余一律**不作裁决**，交回宿主权限流 —— 这一层只为它看得懂的东西负责，
+    读不懂就放行到宿主，绝不因为「读不懂」而拦人。
+  - 写入层判的是**路径不是内容**：内容是用户本来就要写的东西，按内容拦会频繁误伤。
+- **deny 会给出替代改法**（0.1.8 起）：26 条黑名单每条都带 `remediation` —— 为什么危险，
+  以及可直接复制执行的替代命令。它只出现在 deny 结果上，allow 不带。
+  不变量是**断言过的**：任何一条建议的替代命令都**不会**再触发黑名单本身
+  （这条不变量在首版草稿里被违反过 9 处，见 CHANGELOG）。
 
 ## 配置
 
