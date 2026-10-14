@@ -4,6 +4,106 @@ All notable changes to `phocinae-guard` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.9 — 2026-10-15
+
+### Fixed — **the hook named an interpreter that Windows does not have**
+
+`hooks/hooks.json` ran the hook as
+
+    python3 "${CLAUDE_PLUGIN_ROOT}/hooks/guard_hook.py"
+
+Windows has no `python3`. Git Bash does not provide one either — its PATH is the
+Windows PATH in POSIX form, so installing Git Bash cannot conjure a `python3`
+into existence. Measured on the authoring machine (Git Bash present):
+
+    $ python3 "hooks/guard_hook.py"
+    /usr/bin/bash: python3: command not found        exit = 127
+
+Claude Code treats a command hook that **fails to start** as a non-blocking
+error: the action goes ahead. So on every Windows machine the gate did not run,
+and every `Bash` / `Write` / `Edit` / `mcp__*` call fell through to the normal
+permission flow — `git status` and `rm -rf /` alike.
+
+This is the **same defect as 0.1.8, one level up**. 0.1.8 fixed a path that did
+not exist; 0.1.9 fixes an interpreter that does not exist. Both shipped with a
+green self-test, for the same reason:
+
+> the self-test **probed for an interpreter by itself** (found `python`, ran
+> happily) and **never validated the one written in `hooks.json`**. It proved
+> "I can run the hook"; it never proved "**the command we publish** can."
+
+### Added — `hooks/run_guard.sh`, an interpreter-probing launcher
+
+Modelled on Anthropic's own `security-guidance` plugin (`sg-python.sh`), which
+hit the same wall:
+
+* probes `python3.13 … python3.10 → python3 → python → py -3` and **actually
+  executes each candidate** instead of trusting `command -v`. On Windows
+  `python3` often *does* exist — as the Microsoft Store app-execution alias,
+  which **exits 49 silently** in a non-TTY subprocess. `which()` calls that
+  usable; this does not.
+* exports **`PYTHONUTF8=1` before Python starts**. Without it, Windows Python
+  decodes with the ANSI code page while this gate's verdict reasons are Chinese —
+  any caller reading the child in text mode dies with a decode error.
+* the floor is **3.8**, matching what the README has always claimed. Measured,
+  not assumed: `ast.parse(..., feature_version=(3, N))` puts all four shipped
+  Python files at a syntax floor of 3.8. A higher floor would have broken users
+  who currently work.
+
+### Changed — **the gate now fails closed when it cannot run**
+
+    "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/run_guard.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/guard_hook.py\" || exit 2",
+    "shell": "bash"
+
+Official docs: *"a policy hook with a wrong path or a crashing script lets
+everything through."* `exit 2` on `PreToolUse` is a **blocking** error, so "the
+gate could not start" is now "the call is blocked" rather than "the call is
+allowed". The launcher prints where it looked and how to fix it.
+
+`"shell": "bash"` is explicit because the default depends on whether the user
+happens to have Git Bash — the same plugin would otherwise behave differently on
+two Windows machines.
+
+**Trade-off, stated plainly:** after this change, a machine with no working
+Python sees *every* Bash/Write/Edit call blocked until Python is installed or the
+plugin is removed. That is what fail-closed means for a security gate, and the
+alternative — a gate that silently does not exist — is precisely the bug.
+
+> Not used: the official `"onFailure": "block"` field, which expresses this more
+> cleanly. It requires Claude Code **v2.1.295+**; the authoring machine runs
+> 2.1.293. `|| exit 2` is the version-independent equivalent.
+
+### Added — the self-test now proves *the published command* runs
+
+`tests/cc_plugin_self_test.sh` gained three assertions (17 → 18 checks), each
+verified to **go red on a known-bad input**:
+
+| assertion | what it catches | negative control |
+|---|---|---|
+| the script path exists | 0.1.8's missing-path bug | the old `.claude-plugin/hooks/` path |
+| **the launcher resolves and runs** | **this bug** | `python3.99`, which exists nowhere |
+| **the shipped command is executed end to end** with a real `PreToolUse` event: `git status` → `allow`/exit 0, `rm -rf /` → `deny`/exit 2 | "file exists" ≠ "the gate runs" | reverting `hooks.json` to the 0.1.8 form |
+| the `\|\| exit 2` guard is present | silent fail-open | the 0.1.8 form, which has no guard |
+
+Measured: reverting `hooks.json` to `python3 "…"` makes the self-test fail with
+`hook command 的启动器 'python3' 在本机找不到`. Adding the guard but keeping
+`python3` **also** fails, so the launcher assertion has teeth on its own.
+
+Also fixed in the self-test: it runs the published command with **the bash it is
+itself running under**. Resolving `bash` from the Windows PATH picked up **WSL's**
+`C:\WINDOWS\system32\bash.exe`, which cannot see `D:/…` paths. The product is
+unaffected — Claude Code hands the command to Git Bash, whose own PATH resolves
+`bash` to itself (measured: `/usr/bin/bash`) — but the test had been measuring
+the wrong shell.
+
+### Note
+
+Anthropic's own `hookify` plugin in the official marketplace ships the same
+hardcoded `python3`, so this is not a marketplace-admission issue. Related
+upstream reports: **#57946** (Store-stub silent bypass), **#90077** (the `shell`
+field is unusable on Windows without Git Bash *or* `pwsh`), **#40172 / #46449**
+(`security-guidance` hardcoded `python3`).
+
 ## 0.1.8 — 2026-10-14
 
 ### Fixed — **the hook pointed at a file that does not exist**

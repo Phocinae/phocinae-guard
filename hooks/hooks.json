@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard_hook.py\"",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/run_guard.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/guard_hook.py\" || exit 2",
+            "shell": "bash",
             "timeout": 30
           }
         ]

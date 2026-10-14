@@ -32,6 +32,22 @@ if [ -z "$PY" ]; then
 fi
 echo "interpreter: $PY"
 
+# 交给 Python 子进程用的 bash —— 必须是**正在跑本自测的这个 bash**（Git Bash）。
+#
+# 不能让它自己去 PATH 里找 `bash`：在 Windows 上 PATH 里的 `bash` 往往是 WSL 的
+# C:\WINDOWS\system32\bash.exe，它看不到 `D:/...` 这种路径，会报
+# "No such file or directory" —— 实测踩过，报错里还夹着 WSL 自己的 localhost 提示。
+#
+# 注意这只影响**自测**：产品命令里的 `bash` 由 Claude Code 交给 Git Bash 执行，
+# 而 Git Bash 的 PATH 把 /usr/bin 放在最前，所以那里解析到的是 Git Bash 自己
+# （实测：Git Bash 内 `command -v bash` → /usr/bin/bash）。
+SELF_BASH="$(command -v bash)"
+if command -v cygpath >/dev/null 2>&1; then
+    SELF_BASH="$(cygpath -w "$SELF_BASH")"
+fi
+export PHOCINAE_SELF_BASH="$SELF_BASH"
+echo "self-test bash: $SELF_BASH"
+
 PLUGIN_JSON="$ROOT/.claude-plugin/plugin.json"
 HOOKS_JSON="$ROOT/hooks/hooks.json"
 HOOK="$ROOT/hooks/guard_hook.py"
@@ -103,7 +119,7 @@ else
 fi
 
 if "$PY" - "$HOOKS_JSON" "$ROOT" <<'PYEOF'
-import json, os, sys
+import json, os, re, shlex, shutil, subprocess, sys
 h = json.load(open(sys.argv[1], encoding="utf-8"))
 root = sys.argv[2]
 pre = h["hooks"]["PreToolUse"]
@@ -116,39 +132,102 @@ matcher = g.get("matcher") or ""
 for token in ("Bash", "Write", "Edit", "mcp__"):
     assert token in matcher, "matcher 未覆盖 %s：%r" % (token, matcher)
 assert len(g["hooks"]) == 1 and g["hooks"][0]["type"] == "command", "应 command 型"
-cmd = g["hooks"][0]["command"]
+handler = g["hooks"][0]
+cmd = handler["command"]
 assert "guard_hook.py" in cmd, "command 应指向 guard_hook.py"
 assert "${CLAUDE_PLUGIN_ROOT}" in cmd, "command 应使用 ${CLAUDE_PLUGIN_ROOT}"
 
-# ★ 关键断言：把 ${CLAUDE_PLUGIN_ROOT} 展开，**断言那个文件真的存在**。
+resolved = cmd.replace("${CLAUDE_PLUGIN_ROOT}", root).replace("$CLAUDE_PLUGIN_ROOT", root)
+
+# ---------------------------------------------------------------------------
+# 0.1.9：命令里那个**失败守卫**必须是 fail-closed 的。
 #
-# 这一条以前是缺的，而缺它的代价是实测过的：command 曾写成
+# 官方文档：hook 失败/超时时，Claude Code 默认**照常执行**该动作
+# （"a policy hook with a wrong path or a crashing script lets everything
+#   through"）。所以"门跑不起来"必须显式转成阻断，否则等于门不存在。
+# ---------------------------------------------------------------------------
+m = re.search(r"\|\|\s*exit\s+2\s*$", resolved)
+assert m, ("command 必须以 `|| exit 2` 收尾，否则门跑不起来时会静默放行：%r" % cmd)
+body = resolved[:m.start()].rstrip()
+
+parts = shlex.split(body)
+assert len(parts) >= 2, "command 至少要有启动器 + 脚本路径：%r" % cmd
+
+# ★ 断言 1：脚本路径必须真实存在。
+#
+# 这一条是 0.1.8 加的，代价实测过：command 曾写成
 #   ${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hooks/guard_hook.py
 # 而 .claude-plugin/ 下只有 plugin.json，真实文件在 hooks/guard_hook.py。
-# 旧断言只 `"guard_hook.py" in cmd`（子串）＋含 ${CLAUDE_PLUGIN_ROOT}，
-# 两条都能被错误路径满足，于是自测 16/16 全绿，而插件装上去每次 Bash 调用
-# 都 spawn 失败 —— Claude Code 把 hook 启动失败当**非阻断错误**，结果是静默放行。
-resolved = cmd.replace("${CLAUDE_PLUGIN_ROOT}", root).replace("$CLAUDE_PLUGIN_ROOT", root)
-# 去掉 python 解释器与引号，取出脚本路径
-import shlex
-parts = shlex.split(resolved)
 script = parts[-1]
 assert os.path.isfile(script), (
-    "hook command 指向的文件不存在：%r（command=%r，展开后=%r）"
-    % (script, cmd, resolved))
-print("resolved hook script: %s" % script)
+    "hook command 指向的文件不存在：%r（command=%r，展开后=%r）" % (script, cmd, resolved))
+
+# ★★ 断言 2（0.1.9 新增）：命令的第一个 token（解释器**或启动器**）必须真的能跑。
+#
+# 0.1.8 及以前这里是 `python3 "..."`，而 **Windows 上没有 python3**（Git Bash 也没有
+# ——它的 PATH 就是 Windows PATH 的 POSIX 形式，装 Git Bash 造不出 python3）。
+# 于是 hook 以 127 启动失败；Claude Code 把 hook 启动失败当**非阻断错误**，
+# 门不运行，每一次 Bash / Write / Edit 都落回正常权限流。
+#
+# 这条断言以前**不存在**，所以自测在本机 Windows 上照样全绿：脚本文件确实在，
+# 而自测自己的解释器探测（见本文件开头）会去找到 `python`，于是它测的是
+# "我自己能不能跑 hook"，不是"**发布出去的那条命令**能不能跑 hook"。
+launcher = parts[0]
+assert shutil.which(launcher) or os.path.isfile(launcher), (
+    "hook command 的启动器 %r 在本机找不到（command=%r）—— "
+    "这正是「插件装上了、门从不运行」的形态" % (launcher, cmd))
+
+# 跑的时候用**本自测自己所在的 bash**，不要用 PATH 解析出来的那个：
+# Windows 上 PATH 里的 `bash` 可能是 WSL 的，它看不到 D:/... 路径。
+# （产品路径不受影响，见本文件开头的 SELF_BASH 注释。）
+SHELL_BIN = os.environ.get("PHOCINAE_SELF_BASH") or launcher
+
+# 光"找得到"还不够，还要真跑一次：Windows 上 python3 常指向 Microsoft Store
+# 的应用执行别名，它在非 TTY 子进程里**静默 exit 49**，shutil.which() 认为可用。
+probe = subprocess.run([SHELL_BIN, "-c", ""], capture_output=True,
+                       encoding="utf-8", errors="replace")
+assert probe.returncode == 0, (
+    "hook command 的启动器 %r 存在但跑不起来（exit=%s, stderr=%r）"
+    % (launcher, probe.returncode, (probe.stderr or "")[:200]))
+
+# ★★★ 断言 3（0.1.9 新增，最强的一条）：把**发布出去的那条命令原样跑一次**，
+# 喂真实 PreToolUse 事件，要求它真的产出裁决 —— 良性放行、危险拦截。
+# 前两条只证明"文件在、启动器找得到"；这一条证明"门真的在判"。
+CASES = [
+    ("git status", 0, "allow"),
+    ("rm -rf /", 2, "deny"),
+]
+for command, want_exit, want_decision in CASES:
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
+    r = subprocess.run([SHELL_BIN, "-c", resolved], input=payload, capture_output=True,
+                       encoding="utf-8", errors="replace")
+    assert r.returncode == want_exit, (
+        "命令 %r 期望 exit %d，实际 %d（stderr=%r）"
+        % (command, want_exit, r.returncode, (r.stderr or "")[:300]))
+    try:
+        decision = (json.loads(r.stdout or "{}").get("hookSpecificOutput") or {})
+        decision = decision.get("permissionDecision")
+    except ValueError:
+        decision = None
+    assert decision == want_decision, (
+        "命令 %r 期望 permissionDecision=%r，实际 %r（stdout=%r）"
+        % (command, want_decision, decision, (r.stdout or "")[:300]))
+
+print("resolved hook script : %s" % script)
+print("launcher             : %s" % launcher)
+print("end-to-end           : benign=allow/0  dangerous=deny/2")
 print("ok")
 PYEOF
 then
-  ok "hooks.json command 展开后指向真实文件（含 matcher 覆盖 shell+写入）"
+  ok "hooks.json 的启动器可跑 + 端到端产出真实裁决（良性 allow / 危险 deny），且带 fail-closed 守卫"
 else
-  bad "hooks.json command 展开后文件不存在，或 matcher 覆盖不足"
+  bad "hooks.json 的启动器不可用，或端到端没有产出裁决（门装上了却不运行）"
 fi
 
-# 反向验证：把 command 改回那个不存在的路径，上面的解析必须失败。
+# 反向验证 A：把命令改回那个不存在的路径，断言 1 必须失败。
 # 没有这一步，就无法证明那条断言真的在检查它声称检查的东西。
 if "$PY" - "$ROOT" <<'PYEOF'
-import json, os, shlex, sys
+import os, shlex, sys
 root = sys.argv[1]
 broken = 'python3 "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hooks/guard_hook.py"'
 resolved = broken.replace("${CLAUDE_PLUGIN_ROOT}", root)
@@ -160,9 +239,27 @@ if os.path.isfile(script):
 sys.exit(0)
 PYEOF
 then
-  ok "反向验证：旧的 .claude-plugin/hooks/ 路径确实不存在（断言非空转）"
+  ok "反向验证 A：旧的 .claude-plugin/hooks/ 路径确实不存在（断言 1 非空转）"
 else
-  bad "反向验证失败：旧路径居然存在，说明本项断言指向了别的东西"
+  bad "反向验证 A 失败：旧路径居然存在，说明断言 1 指向了别的东西"
+fi
+
+# 反向验证 B（0.1.9 新增）：用一个**在任何平台上都不存在**的启动器，
+# 断言 2 必须失败 —— 证明它查的是"启动器可不可用"，而不是恒真。
+# 用 python3.99 而不是 python3：后者在 Linux CI 上存在，会让这条反向验证
+# 在别的机器上变成假绿。
+if "$PY" - <<'PYEOF'
+import shlex, shutil, sys
+launcher = shlex.split('python3.99 "/x/hooks/guard_hook.py"')[0]
+if shutil.which(launcher) or shutil.which(launcher):
+    print("unexpected: %r resolved" % launcher)
+    sys.exit(1)
+sys.exit(0)
+PYEOF
+then
+  ok "反向验证 B：不存在的启动器确实解析不了（断言 2 非空转）"
+else
+  bad "反向验证 B 失败：一个不该存在的解释器居然被解析到了"
 fi
 
 # ------------------------------------------- 2) 服务地址对齐（默认 127.0.0.1:8155）

@@ -116,6 +116,15 @@ cp guard.conf.example.json /etc/phocinae-guard.conf.json
 再开 `PHOCINAE_GUARD_L1_ENABLED=1`。不装服务也可用——L1 关闭时灰区自动进入
 fail-closed。
 
+> **Claude Code 插件形态的额外要求（0.1.9 起，实测踩过）**：hook 的启动层会按
+> `python3.13…3.10 → python3 → python → py -3` **逐个真跑一次**来挑解释器
+> （`hooks/run_guard.sh`），所以 PATH 上只要**有一个能用的 Python ≥ 3.8** 就够。
+> 为什么要探测而不是直接写 `python3`：**Windows 上没有 `python3`**（Git Bash 也没有
+> ——它的 PATH 就是 Windows PATH 的 POSIX 形式），而 Claude Code 把"hook 启动失败"
+> 当**非阻断错误**，于是门不运行、每次调用都放行；这正是 0.1.9 修掉的缺陷。
+> 反过来，**一个都找不到时，门会 fail-closed（拦截）**并打出该装哪个解释器 ——
+> "门跑不起来"不再等于"门不存在"。
+
 ## 用法
 
 ```bash

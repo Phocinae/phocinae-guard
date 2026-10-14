@@ -38,7 +38,7 @@ import sys
 import urllib.error
 import urllib.request
 
-VERSION = "0.1.8"
+VERSION = "0.1.9"
 
 EXIT_ALLOW = 0
 EXIT_DENY = 1
